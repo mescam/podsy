@@ -440,6 +440,7 @@ def sync_folder(
     Returns:
         List of successfully synced Track objects
     """
+    from .playlists import DuplicatePlaylistError
     from .playlists import create_playlist as make_playlist
 
     synced: list[Track] = []
@@ -467,9 +468,21 @@ def sync_folder(
 
     # Create playlist if requested and we synced some tracks
     if create_playlist and synced:
-        playlist = make_playlist(db, folder.name)
-        for track in synced:
-            playlist.track_ids.append(track.id)
+        playlist_name = folder.name
+        # Find a unique name if needed
+        base_name = playlist_name
+        counter = 1
+        while db.get_playlist_by_name(playlist_name) is not None:
+            counter += 1
+            playlist_name = f"{base_name} ({counter})"
+
+        try:
+            playlist = make_playlist(db, playlist_name)
+            for track in synced:
+                playlist.track_ids.append(track.id)
+        except DuplicatePlaylistError:
+            # Should not happen due to check above, but handle gracefully
+            pass
 
     return synced
 
