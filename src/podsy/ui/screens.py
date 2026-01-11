@@ -28,7 +28,7 @@ from ..playlists import (
     add_track_to_playlist,
     create_playlist,
 )
-from ..sync import SyncError, remove_track, sync_file
+from ..sync import SyncError, remove_track, sync_file, sync_folder
 
 if TYPE_CHECKING:
     pass
@@ -77,7 +77,7 @@ class MainScreen(Screen[None]):
 
     BINDINGS = [
         Binding("tab", "switch_focus", "Switch Pane", show=True),
-        Binding("s", "sync_selected", "Sync", show=True),
+        Binding("s", "sync_selected", "Sync File/Folder", show=True),
         Binding("d", "delete_selected", "Delete", show=True),
         Binding("p", "new_playlist", "New Playlist", show=True),
         Binding("a", "add_to_playlist", "Add to Playlist", show=True),
@@ -218,28 +218,54 @@ class MainScreen(Screen[None]):
             self.query_one("#ipod-table", DataTable).focus()
 
     def action_sync_selected(self) -> None:
-        """Sync selected file(s) to iPod."""
+        """Sync selected file or folder to iPod."""
         tree = self.query_one("#local-tree", DirectoryTree)
         selected = tree.cursor_node
         if selected is None or selected.data is None:
-            self.notify("No file selected", severity="warning")
+            self.notify("No file or folder selected", severity="warning")
             return
 
         path = selected.data.path
-        if not path.is_file():
-            self.notify("Please select a file to sync", severity="warning")
-            return
 
-        try:
-            track = sync_file(self.device, self.database, path)
-            save(self.database, self.device.db_path)
-            self._load_tracks(self.current_playlist_id)
-            self._update_status()
-            self.notify(f"Synced: {track.title}", severity="information")
-        except SyncError as e:
-            self.notify(f"Sync failed: {e}", severity="error")
-        except Exception as e:
-            self.notify(f"Error: {e}", severity="error")
+        if path.is_file():
+            # Sync single file
+            try:
+                track = sync_file(self.device, self.database, path)
+                save(self.database, self.device.db_path)
+                self._load_tracks(self.current_playlist_id)
+                self._update_status()
+                self.notify(f"Synced: {track.title}", severity="information")
+            except SyncError as e:
+                self.notify(f"Sync failed: {e}", severity="error")
+            except Exception as e:
+                self.notify(f"Error: {e}", severity="error")
+
+        elif path.is_dir():
+            # Sync entire folder
+            try:
+                self.notify(f"Syncing folder: {path.name}...", severity="information")
+                tracks = sync_folder(
+                    self.device,
+                    self.database,
+                    path,
+                    recursive=True,
+                    create_playlist=True,
+                )
+                save(self.database, self.device.db_path)
+                self._load_tracks(self.current_playlist_id)
+                self._load_playlists()
+                self._update_status()
+                if tracks:
+                    self.notify(
+                        f"Synced {len(tracks)} tracks from {path.name}",
+                        severity="information",
+                    )
+                else:
+                    self.notify(f"No music files found in {path.name}", severity="warning")
+            except SyncError as e:
+                self.notify(f"Sync failed: {e}", severity="error")
+            except Exception as e:
+                self.notify(f"Error: {e}", severity="error")
 
     def action_delete_selected(self) -> None:
         """Delete selected track from iPod."""
