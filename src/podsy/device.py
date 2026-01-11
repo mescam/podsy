@@ -61,11 +61,14 @@ def discover_ipods() -> list[IPodDevice]:
     search_paths.append(Path("/media"))
     search_paths.append(Path("/mnt"))
 
-    # User-specific mount points
+    # User-specific mount points (Linux)
     user = os.getenv("USER", "")
     if user:
         search_paths.append(Path(f"/run/media/{user}"))
         search_paths.append(Path(f"/media/{user}"))
+
+    # macOS mount location
+    search_paths.append(Path("/Volumes"))
 
     # Home directory mounts
     home = Path.home()
