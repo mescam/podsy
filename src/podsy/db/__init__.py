@@ -5,7 +5,7 @@ used by iPod 5.5g devices.
 """
 
 from .models import Database, FileType, MediaType, MhodType, Playlist, SortOrder, Track
-from .parser import ITunesDBError, InvalidDatabaseError, load, save
+from .parser import InvalidDatabaseError, ITunesDBError, load, save
 
 __all__ = [
     "Database",

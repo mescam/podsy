@@ -169,10 +169,9 @@ def _parse_sysinfo(path: Path) -> tuple[str, str, str]:
                     serial = value
                 elif key == "visibleBuildID" or key == "BuildID":
                     firmware_version = value
-                elif key == "FirewireGuid":
+                elif key == "FirewireGuid" and not serial:
                     # Sometimes serial is here
-                    if not serial:
-                        serial = value
+                    serial = value
 
     except (OSError, UnicodeDecodeError):
         pass

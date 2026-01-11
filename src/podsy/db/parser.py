@@ -778,10 +778,7 @@ def _build_mhit(track: Track) -> bytes:
 def _build_string_mhod(mhod_type: MhodType, value: str) -> bytes:
     """Build a string MHOD atom."""
     # Encode string
-    if mhod_type == MhodType.LOCATION:
-        string_data = encode_path(value)
-    else:
-        string_data = encode_string(value)
+    string_data = encode_path(value) if mhod_type == MhodType.LOCATION else encode_string(value)
 
     string_length = len(string_data)
     total_length = 40 + string_length  # 24 header + 16 string header + data

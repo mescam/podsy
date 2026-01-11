@@ -8,22 +8,15 @@ do NOT require the hash/checksum validation used in later iPod models.
 """
 
 from construct import (
-    Array,
     Bytes,
-    Computed,
     Const,
     Float32l,
-    GreedyBytes,
-    GreedyRange,
-    If,
     Int8ul,
     Int16ul,
     Int32sl,
     Int32ul,
     Int64ul,
-    Padding,
     Struct,
-    Switch,
     this,
 )
 

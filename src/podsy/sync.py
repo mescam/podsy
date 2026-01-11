@@ -4,6 +4,7 @@ This module handles copying music files to the iPod and registering
 them in the iTunesDB.
 """
 
+import contextlib
 import hashlib
 import random
 import shutil
@@ -11,7 +12,7 @@ import string
 from datetime import datetime
 from pathlib import Path
 
-from mutagen import File as MutagenFile
+from mutagen import File as MutagenFile  # type: ignore[attr-defined]
 from mutagen.easyid3 import EasyID3
 from mutagen.id3 import ID3
 from mutagen.mp3 import MP3
@@ -184,10 +185,8 @@ def _extract_easy_tags(tags: EasyID3, metadata: dict[str, str | int]) -> None:
     if "composer" in tags and tags["composer"]:
         metadata["composer"] = tags["composer"][0]
     if "date" in tags and tags["date"]:
-        try:
+        with contextlib.suppress(ValueError, IndexError):
             metadata["year"] = int(tags["date"][0][:4])
-        except (ValueError, IndexError):
-            pass
     if "tracknumber" in tags and tags["tracknumber"]:
         tn = tags["tracknumber"][0]
         if "/" in tn:
@@ -221,10 +220,8 @@ def _extract_id3_tags(id3: ID3, metadata: dict[str, str | int]) -> None:
     if "TCOM" in id3:
         metadata["composer"] = str(id3["TCOM"])
     if "TDRC" in id3:
-        try:
+        with contextlib.suppress(ValueError, IndexError):
             metadata["year"] = int(str(id3["TDRC"])[:4])
-        except (ValueError, IndexError):
-            pass
     if "TRCK" in id3:
         tn = str(id3["TRCK"])
         if "/" in tn:
@@ -256,10 +253,8 @@ def _extract_mp4_tags(audio: MP4, metadata: dict[str, str | int]) -> None:
     if "\xa9cmt" in tags:
         metadata["comment"] = tags["\xa9cmt"][0]
     if "\xa9day" in tags:
-        try:
+        with contextlib.suppress(ValueError, IndexError):
             metadata["year"] = int(str(tags["\xa9day"][0])[:4])
-        except (ValueError, IndexError):
-            pass
     if "trkn" in tags:
         track_info = tags["trkn"][0]
         if isinstance(track_info, tuple):
@@ -286,10 +281,7 @@ def _extract_generic_tags(
 
     for key, value in tag_dict.items():
         key_lower = key.lower()
-        if isinstance(value, list) and value:
-            val = str(value[0])
-        else:
-            val = str(value)
+        val = str(value[0]) if isinstance(value, list) and value else str(value)
 
         if "title" in key_lower and not metadata.get("title"):
             metadata["title"] = val
@@ -416,11 +408,9 @@ def remove_track(device: IPodDevice, db: Database, track: Track) -> None:
         file_path = device.mount_point / rel_path
 
         # Delete file if it exists
-        if file_path.exists():
-            try:
+        with contextlib.suppress(OSError):
+            if file_path.exists():
                 file_path.unlink()
-            except OSError:
-                pass  # File might already be gone
 
     # Remove from database
     db.tracks = [t for t in db.tracks if t.id != track.id]
@@ -456,10 +446,7 @@ def sync_folder(
     errors: list[tuple[Path, str]] = []
 
     # Collect files
-    if recursive:
-        files = list(folder.rglob("*"))
-    else:
-        files = list(folder.iterdir())
+    files = list(folder.rglob("*")) if recursive else list(folder.iterdir())
 
     # Filter to supported formats
     music_files = [

@@ -18,7 +18,6 @@ from textual.widgets import (
     Label,
     ListItem,
     ListView,
-    ProgressBar,
     Static,
 )
 
@@ -28,13 +27,11 @@ from ..playlists import (
     PlaylistError,
     add_track_to_playlist,
     create_playlist,
-    delete_playlist,
-    remove_track_from_playlist,
 )
 from ..sync import SyncError, remove_track, sync_file
 
 if TYPE_CHECKING:
-    from ..db.models import Track
+    pass
 
 
 class NoDeviceScreen(Screen[None]):
@@ -62,11 +59,13 @@ class NoDeviceScreen(Screen[None]):
     @on(Button.Pressed, "#refresh-btn")
     def on_refresh_pressed(self) -> None:
         """Handle refresh button press."""
-        self.app.action_refresh()
+        if hasattr(self.app, "action_refresh"):
+            self.app.action_refresh()  # type: ignore[attr-defined]
 
     def action_refresh(self) -> None:
         """Refresh device detection."""
-        self.app.action_refresh()
+        if hasattr(self.app, "action_refresh"):
+            self.app.action_refresh()  # type: ignore[attr-defined]
 
     def action_quit(self) -> None:
         """Quit the application."""
@@ -257,12 +256,13 @@ class MainScreen(Screen[None]):
         try:
             # The row key is the cell values, we need to use the key we set
             cursor_row = table.cursor_row
-            row_key_obj = table.get_row_at(cursor_row)
+            table.get_row_at(cursor_row)
             # Actually we stored the key when adding, let's get it differently
             track_id = None
             for key in table.rows:
                 if table.get_row_index(key) == cursor_row:
-                    track_id = int(key.value)
+                    if key.value is not None:
+                        track_id = int(key.value)
                     break
 
             if track_id is None:
@@ -288,7 +288,7 @@ class MainScreen(Screen[None]):
         """Handle new playlist creation result."""
         if name:
             try:
-                playlist = create_playlist(self.database, name)
+                create_playlist(self.database, name)
                 save(self.database, self.device.db_path)
                 self._load_playlists()
                 self.notify(f"Created playlist: {name}", severity="information")
@@ -307,7 +307,8 @@ class MainScreen(Screen[None]):
         cursor_row = table.cursor_row
         for key in table.rows:
             if table.get_row_index(key) == cursor_row:
-                track_id = int(key.value)
+                if key.value is not None:
+                    track_id = int(key.value)
                 break
 
         if track_id is None:

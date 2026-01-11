@@ -20,6 +20,8 @@
             packages = [
               pkgs.python313
               pkgs.uv
+              pkgs.ruff
+              pkgs.pyright
             ];
 
             env = lib.optionalAttrs pkgs.stdenv.isLinux {
