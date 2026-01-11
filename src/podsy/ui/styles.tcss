@@ -1,0 +1,172 @@
+/* Podsy TUI Styles */
+
+/* Main layout */
+#main-container {
+    height: 1fr;
+    width: 100%;
+}
+
+.pane {
+    width: 50%;
+    height: 100%;
+    border: solid $primary;
+    padding: 0 1;
+}
+
+.pane-title {
+    text-style: bold;
+    background: $primary;
+    color: $text;
+    padding: 0 1;
+    width: 100%;
+    text-align: center;
+}
+
+#left-pane {
+    border-right: none;
+}
+
+#right-pane {
+    border-left: solid $primary-darken-2;
+}
+
+/* Directory tree */
+#local-tree {
+    height: 1fr;
+    scrollbar-gutter: stable;
+}
+
+/* iPod table */
+#ipod-table {
+    height: 1fr;
+    scrollbar-gutter: stable;
+}
+
+/* Playlist bar */
+#playlist-bar {
+    height: 3;
+    dock: bottom;
+    background: $surface;
+    border-top: solid $primary;
+    padding: 0 1;
+}
+
+#playlist-label {
+    width: auto;
+    padding: 1 1 0 0;
+}
+
+#playlist-list {
+    width: 1fr;
+    height: 100%;
+}
+
+#playlist-list > ListItem {
+    padding: 0 1;
+}
+
+#new-playlist-btn {
+    width: auto;
+    margin: 0 0 0 1;
+}
+
+/* Status bar */
+#status-bar {
+    dock: bottom;
+    height: 1;
+    background: $surface-darken-1;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+/* No device screen */
+#no-device-container {
+    align: center middle;
+    width: 100%;
+    height: 100%;
+}
+
+#no-device-title {
+    text-style: bold;
+    text-align: center;
+    width: 100%;
+    margin-bottom: 1;
+}
+
+#no-device-message {
+    text-align: center;
+    width: 100%;
+    color: $text-muted;
+    margin-bottom: 2;
+}
+
+#refresh-btn {
+    width: auto;
+}
+
+/* Dialog styles */
+#dialog-container {
+    align: center middle;
+    width: 60;
+    height: auto;
+    max-height: 80%;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#dialog-title {
+    text-style: bold;
+    text-align: center;
+    width: 100%;
+    margin-bottom: 1;
+}
+
+#playlist-name-input {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+#dialog-buttons {
+    width: 100%;
+    height: auto;
+    align: center middle;
+}
+
+#dialog-buttons Button {
+    margin: 0 1;
+}
+
+#select-playlist-list {
+    width: 100%;
+    height: auto;
+    max-height: 15;
+    margin-bottom: 1;
+    border: solid $primary-darken-2;
+}
+
+#cancel-btn {
+    width: auto;
+}
+
+/* Focus styles */
+.pane:focus-within {
+    border: solid $accent;
+}
+
+DataTable:focus {
+    border: solid $accent;
+}
+
+DirectoryTree:focus {
+    border: solid $accent;
+}
+
+/* Scrollbar styling */
+*::-webkit-scrollbar {
+    width: 1;
+}
+
+*::-webkit-scrollbar-thumb {
+    background: $primary-darken-1;
+}
