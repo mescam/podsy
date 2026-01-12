@@ -42,6 +42,33 @@
     scrollbar-gutter: stable;
 }
 
+/* iPod tree */
+#ipod-tree {
+    height: 1fr;
+    scrollbar-gutter: stable;
+}
+
+/* Library header with filter and sort */
+#library-header {
+    height: 3;
+    width: 100%;
+    align: left middle;
+}
+
+#library-header .pane-title {
+    width: auto;
+    margin-right: 1;
+}
+
+#filter-input {
+    width: 1fr;
+    margin: 0 1;
+}
+
+#sort-select {
+    width: 16;
+}
+
 /* Playlist bar */
 #playlist-bar {
     height: 3;
@@ -159,5 +186,9 @@ DataTable:focus {
 }
 
 DirectoryTree:focus {
+    border: solid $accent;
+}
+
+Tree:focus {
     border: solid $accent;
 }

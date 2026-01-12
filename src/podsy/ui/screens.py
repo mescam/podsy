@@ -1,5 +1,6 @@
 """Screen definitions for Podsy TUI."""
 
+from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -10,7 +11,6 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import (
     Button,
-    DataTable,
     DirectoryTree,
     Footer,
     Header,
@@ -18,10 +18,13 @@ from textual.widgets import (
     Label,
     ListItem,
     ListView,
+    Select,
     Static,
+    Tree,
 )
 
 from ..db import Database, save
+from ..db.models import Track
 from ..device import IPodDevice
 from ..playlists import (
     PlaylistError,
@@ -81,7 +84,15 @@ class MainScreen(Screen[None]):
         Binding("d", "delete_selected", "Delete", show=True),
         Binding("p", "new_playlist", "New Playlist", show=True),
         Binding("a", "add_to_playlist", "Add to Playlist", show=True),
+        Binding("f", "focus_filter", "Filter", show=True),
         Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    SORT_OPTIONS = [
+        ("artist", "Artist"),
+        ("album", "Album"),
+        ("title", "Title"),
+        ("date_added", "Date Added"),
     ]
 
     def __init__(
@@ -103,6 +114,10 @@ class MainScreen(Screen[None]):
         self.local_path = local_path
         self.current_playlist_id: int | None = None
         self._focus_left = True
+        self._filter_text = ""
+        self._sort_by = "artist"
+        # Map tree node data to track IDs
+        self._node_to_track: dict[str, int] = {}
 
     def compose(self) -> ComposeResult:
         """Compose the main screen layout."""
@@ -116,8 +131,19 @@ class MainScreen(Screen[None]):
 
             # Right pane - iPod contents
             with Vertical(id="right-pane", classes="pane"):
-                yield Label("iPod Library", classes="pane-title")
-                yield DataTable(id="ipod-table")
+                with Horizontal(id="library-header"):
+                    yield Label("iPod Library", classes="pane-title")
+                    yield Input(
+                        placeholder="Filter...",
+                        id="filter-input",
+                    )
+                    yield Select(
+                        options=[(label, value) for value, label in self.SORT_OPTIONS],
+                        value="artist",
+                        id="sort-select",
+                        allow_blank=False,
+                    )
+                yield Tree("Library", id="ipod-tree")
 
         # Playlist bar
         with Horizontal(id="playlist-bar"):
@@ -131,29 +157,14 @@ class MainScreen(Screen[None]):
 
     def on_mount(self) -> None:
         """Handle screen mount."""
-        self._setup_ipod_table()
-        self._load_tracks()
+        self._load_library_tree()
         self._load_playlists()
         self._update_status()
 
-    def _setup_ipod_table(self) -> None:
-        """Configure the iPod data table."""
-        table = self.query_one("#ipod-table", DataTable)
-        table.cursor_type = "row"
-        table.zebra_stripes = True
-        table.add_columns("Title", "Artist", "Album", "Time", "Bitrate")
-
-    def _load_tracks(self, playlist_id: int | None = None) -> None:
-        """Load tracks into the data table.
-
-        Args:
-            playlist_id: Optional playlist to filter by (None = all tracks)
-        """
-        table = self.query_one("#ipod-table", DataTable)
-        table.clear()
-
-        if playlist_id is not None:
-            playlist = self.database.get_playlist_by_id(playlist_id)
+    def _get_filtered_tracks(self) -> list[Track]:
+        """Get tracks filtered by current filter text and playlist."""
+        if self.current_playlist_id is not None:
+            playlist = self.database.get_playlist_by_id(self.current_playlist_id)
             if playlist:
                 tracks = [
                     self.database.get_track_by_id(tid)
@@ -165,21 +176,87 @@ class MainScreen(Screen[None]):
         else:
             tracks = self.database.tracks
 
-        for track in tracks:
-            # Format duration
-            duration_sec = track.duration_ms // 1000
-            minutes = duration_sec // 60
-            seconds = duration_sec % 60
-            duration_str = f"{minutes}:{seconds:02d}"
+        # Apply filter
+        if self._filter_text:
+            filter_lower = self._filter_text.lower()
+            tracks = [
+                t for t in tracks
+                if (t.title and filter_lower in t.title.lower())
+                or (t.artist and filter_lower in t.artist.lower())
+                or (t.album and filter_lower in t.album.lower())
+            ]
 
-            table.add_row(
-                track.title or "(No Title)",
-                track.artist or "(Unknown)",
-                track.album or "(Unknown)",
-                duration_str,
-                f"{track.bitrate}k" if track.bitrate else "-",
-                key=str(track.id),
+        return tracks
+
+    def _load_library_tree(self) -> None:
+        """Load tracks into the tree view organized by artist/album."""
+        tree = self.query_one("#ipod-tree", Tree)
+        tree.clear()
+        tree.root.expand()
+        self._node_to_track.clear()
+
+        tracks = self._get_filtered_tracks()
+
+        # Sort tracks
+        if self._sort_by == "artist":
+            tracks.sort(key=lambda t: (t.artist or "", t.album or "", t.title or ""))
+        elif self._sort_by == "album":
+            tracks.sort(key=lambda t: (t.album or "", t.artist or "", t.title or ""))
+        elif self._sort_by == "title":
+            tracks.sort(key=lambda t: (t.title or "", t.artist or "", t.album or ""))
+        elif self._sort_by == "date_added":
+            tracks.sort(key=lambda t: t.date_added, reverse=True)
+
+        # Build tree structure
+        if self._sort_by in ("artist", "title", "date_added"):
+            # Group by Artist -> Album -> Track
+            artists: dict[str, dict[str, list[Track]]] = defaultdict(
+                lambda: defaultdict(list)
             )
+            for track in tracks:
+                artist = track.artist or "(Unknown Artist)"
+                album = track.album or "(Unknown Album)"
+                artists[artist][album].append(track)
+
+            for artist_name in sorted(artists.keys()):
+                artist_node = tree.root.add(f"[bold]{artist_name}[/bold]", expand=False)
+                for album_name in sorted(artists[artist_name].keys()):
+                    album_node = artist_node.add(f"[dim]{album_name}[/dim]", expand=False)
+                    for track in artists[artist_name][album_name]:
+                        duration = self._format_duration(track.duration_ms)
+                        label = f"{track.title or '(No Title)'} [{duration}]"
+                        album_node.add_leaf(label)
+                        self._node_to_track[label] = track.id
+
+        elif self._sort_by == "album":
+            # Group by Album -> Artist -> Track
+            albums: dict[str, dict[str, list[Track]]] = defaultdict(
+                lambda: defaultdict(list)
+            )
+            for track in tracks:
+                album = track.album or "(Unknown Album)"
+                artist = track.artist or "(Unknown Artist)"
+                albums[album][artist].append(track)
+
+            for album_name in sorted(albums.keys()):
+                album_node = tree.root.add(f"[bold]{album_name}[/bold]", expand=False)
+                for artist_name in sorted(albums[album_name].keys()):
+                    artist_node = album_node.add(f"[dim]{artist_name}[/dim]", expand=False)
+                    for track in albums[album_name][artist_name]:
+                        duration = self._format_duration(track.duration_ms)
+                        label = f"{track.title or '(No Title)'} [{duration}]"
+                        artist_node.add_leaf(label)
+                        self._node_to_track[label] = track.id
+
+        # Update status with track count
+        self._update_status(len(tracks))
+
+    def _format_duration(self, duration_ms: int) -> str:
+        """Format duration in milliseconds to mm:ss."""
+        duration_sec = duration_ms // 1000
+        minutes = duration_sec // 60
+        seconds = duration_sec % 60
+        return f"{minutes}:{seconds:02d}"
 
     def _load_playlists(self) -> None:
         """Load playlists into the playlist list."""
@@ -199,15 +276,42 @@ class MainScreen(Screen[None]):
                     )
                 )
 
-    def _update_status(self) -> None:
+    def _update_status(self, visible_count: int | None = None) -> None:
         """Update the status bar."""
         status = self.query_one("#status-bar", Static)
-        track_count = len(self.database.tracks)
+        total_count = len(self.database.tracks)
+        if visible_count is None:
+            visible_count = total_count
         free_mb = self.device.free_space // (1024 * 1024)
         total_mb = self.device.total_space // (1024 * 1024)
+
+        if visible_count != total_count:
+            count_str = f"{visible_count}/{total_count} tracks"
+        else:
+            count_str = f"{total_count} tracks"
+
         status.update(
-            f"{track_count} tracks | {free_mb}MB free / {total_mb}MB total | {self.device.model}"
+            f"{count_str} | {free_mb}MB free / {total_mb}MB total | {self.device.model}"
         )
+
+    def _get_selected_track_id(self) -> int | None:
+        """Get the track ID of the currently selected tree node."""
+        tree = self.query_one("#ipod-tree", Tree)
+        if tree.cursor_node is None:
+            return None
+
+        label = str(tree.cursor_node.label)
+        # Strip markup
+        import re
+        clean_label = re.sub(r'\[.*?\]', '', label)
+        
+        # Try to find in our mapping
+        for node_label, track_id in self._node_to_track.items():
+            clean_node = re.sub(r'\[.*?\]', '', node_label)
+            if clean_node == clean_label:
+                return track_id
+
+        return None
 
     def action_switch_focus(self) -> None:
         """Switch focus between panes."""
@@ -215,7 +319,24 @@ class MainScreen(Screen[None]):
         if self._focus_left:
             self.query_one("#local-tree", DirectoryTree).focus()
         else:
-            self.query_one("#ipod-table", DataTable).focus()
+            self.query_one("#ipod-tree", Tree).focus()
+
+    def action_focus_filter(self) -> None:
+        """Focus the filter input."""
+        self.query_one("#filter-input", Input).focus()
+
+    @on(Input.Changed, "#filter-input")
+    def on_filter_changed(self, event: Input.Changed) -> None:
+        """Handle filter text change."""
+        self._filter_text = event.value
+        self._load_library_tree()
+
+    @on(Select.Changed, "#sort-select")
+    def on_sort_changed(self, event: Select.Changed) -> None:
+        """Handle sort selection change."""
+        if event.value:
+            self._sort_by = str(event.value)
+            self._load_library_tree()
 
     def action_sync_selected(self) -> None:
         """Sync selected file or folder to iPod."""
@@ -232,8 +353,7 @@ class MainScreen(Screen[None]):
             try:
                 track = sync_file(self.device, self.database, path)
                 save(self.database, self.device.db_path)
-                self._load_tracks(self.current_playlist_id)
-                self._update_status()
+                self._load_library_tree()
                 self.notify(f"Synced: {track.title}", severity="information")
             except SyncError as e:
                 self.notify(f"Sync failed: {e}", severity="error")
@@ -252,9 +372,8 @@ class MainScreen(Screen[None]):
                     create_playlist=True,
                 )
                 save(self.database, self.device.db_path)
-                self._load_tracks(self.current_playlist_id)
+                self._load_library_tree()
                 self._load_playlists()
-                self._update_status()
                 if tracks:
                     self.notify(
                         f"Synced {len(tracks)} tracks from {path.name}",
@@ -269,39 +388,20 @@ class MainScreen(Screen[None]):
 
     def action_delete_selected(self) -> None:
         """Delete selected track from iPod."""
-        table = self.query_one("#ipod-table", DataTable)
-        if table.cursor_row is None:
+        track_id = self._get_selected_track_id()
+        if track_id is None:
             self.notify("No track selected", severity="warning")
             return
 
-        row_key = table.get_row_at(table.cursor_row)
-        if not row_key:
-            return
-
-        # Get track ID from row key
         try:
-            # The row key is the cell values, we need to use the key we set
-            cursor_row = table.cursor_row
-            table.get_row_at(cursor_row)
-            # Actually we stored the key when adding, let's get it differently
-            track_id = None
-            for key in table.rows:
-                if table.get_row_index(key) == cursor_row:
-                    if key.value is not None:
-                        track_id = int(key.value)
-                    break
-
-            if track_id is None:
-                return
-
             track = self.database.get_track_by_id(track_id)
             if track is None:
                 return
 
             remove_track(self.device, self.database, track)
             save(self.database, self.device.db_path)
-            self._load_tracks(self.current_playlist_id)
-            self._update_status()
+            self._load_library_tree()
+            self._load_playlists()
             self.notify(f"Deleted: {track.title}", severity="information")
         except Exception as e:
             self.notify(f"Delete failed: {e}", severity="error")
@@ -323,21 +423,9 @@ class MainScreen(Screen[None]):
 
     def action_add_to_playlist(self) -> None:
         """Add selected track to a playlist."""
-        table = self.query_one("#ipod-table", DataTable)
-        if table.cursor_row is None:
-            self.notify("No track selected", severity="warning")
-            return
-
-        # Get track ID
-        track_id = None
-        cursor_row = table.cursor_row
-        for key in table.rows:
-            if table.get_row_index(key) == cursor_row:
-                if key.value is not None:
-                    track_id = int(key.value)
-                break
-
+        track_id = self._get_selected_track_id()
         if track_id is None:
+            self.notify("No track selected", severity="warning")
             return
 
         # Show playlist selection
@@ -375,7 +463,7 @@ class MainScreen(Screen[None]):
                 self.current_playlist_id = int(item_id.replace("playlist-", ""))
             except ValueError:
                 self.current_playlist_id = None
-        self._load_tracks(self.current_playlist_id)
+        self._load_library_tree()
 
     @on(Button.Pressed, "#new-playlist-btn")
     def on_new_playlist_pressed(self) -> None:
