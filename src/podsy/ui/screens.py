@@ -51,10 +51,19 @@ class NoDeviceScreen(Screen[None]):
         yield Container(
             Static("No iPod Detected", id="no-device-title"),
             Static(
-                "Please connect your iPod 5.5g and press 'r' to refresh.",
+                "Connect your iPod and press 'r' to refresh,\n"
+                "or enter the mount point manually below:",
                 id="no-device-message",
             ),
-            Button("Refresh", id="refresh-btn", variant="primary"),
+            Input(
+                placeholder="/path/to/ipod/mount...",
+                id="mount-path-input",
+            ),
+            Horizontal(
+                Button("Refresh", id="refresh-btn", variant="primary"),
+                Button("Connect", id="connect-btn", variant="success"),
+                id="no-device-buttons",
+            ),
             id="no-device-container",
         )
         yield Footer()
@@ -64,6 +73,47 @@ class NoDeviceScreen(Screen[None]):
         """Handle refresh button press."""
         if hasattr(self.app, "action_refresh"):
             self.app.action_refresh()  # type: ignore[attr-defined]
+
+    @on(Button.Pressed, "#connect-btn")
+    def on_connect_pressed(self) -> None:
+        """Handle connect button press."""
+        self._try_manual_connect()
+
+    @on(Input.Submitted, "#mount-path-input")
+    def on_mount_path_submitted(self) -> None:
+        """Handle mount path input submission."""
+        self._try_manual_connect()
+
+    def _try_manual_connect(self) -> None:
+        """Try to connect to manually entered mount path."""
+        mount_input = self.query_one("#mount-path-input", Input)
+        path_str = mount_input.value.strip()
+
+        if not path_str:
+            self.notify("Please enter a mount path", severity="warning")
+            return
+
+        path = Path(path_str).expanduser()
+        if not path.exists():
+            self.notify(f"Path does not exist: {path}", severity="error")
+            return
+
+        if not path.is_dir():
+            self.notify(f"Path is not a directory: {path}", severity="error")
+            return
+
+        # Check for iPod structure
+        ipod_control = path / "iPod_Control"
+        if not ipod_control.exists():
+            self.notify(
+                f"Not a valid iPod: {path} (missing iPod_Control folder)",
+                severity="error",
+            )
+            return
+
+        # Try to connect via app
+        if hasattr(self.app, "connect_to_path"):
+            self.app.connect_to_path(path)  # type: ignore[attr-defined]
 
     def action_refresh(self) -> None:
         """Refresh device detection."""
@@ -85,6 +135,7 @@ class MainScreen(Screen[None]):
         Binding("p", "new_playlist", "New Playlist", show=True),
         Binding("a", "add_to_playlist", "Add to Playlist", show=True),
         Binding("f", "focus_filter", "Filter", show=True),
+        Binding("l", "change_local_path", "Change Local Path", show=True),
         Binding("escape", "cancel", "Cancel", show=False),
     ]
 
@@ -469,6 +520,104 @@ class MainScreen(Screen[None]):
     def on_new_playlist_pressed(self) -> None:
         """Handle new playlist button press."""
         self.action_new_playlist()
+
+    def action_change_local_path(self) -> None:
+        """Change the local files path."""
+        self.app.push_screen(
+            ChangePathScreen(self.local_path),
+            self._on_local_path_changed,
+        )
+
+    def _on_local_path_changed(self, new_path: Path | None) -> None:
+        """Handle local path change."""
+        if new_path:
+            self.local_path = new_path
+            # Update the directory tree
+            tree = self.query_one("#local-tree", DirectoryTree)
+            tree.path = new_path
+            tree.reload()
+            self.notify(f"Changed path to: {new_path}", severity="information")
+
+
+class ChangePathScreen(Screen[Path | None]):
+    """Modal screen for changing the local path."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=True),
+        Binding("enter", "submit", "Change", show=True),
+    ]
+
+    def __init__(self, current_path: Path) -> None:
+        """Initialize with current path."""
+        super().__init__()
+        self.current_path = current_path
+
+    def compose(self) -> ComposeResult:
+        """Compose the change path screen."""
+        yield Container(
+            Label("Change Local Path", id="dialog-title"),
+            Static(f"Current: {self.current_path}", id="current-path-display"),
+            Input(
+                placeholder="/path/to/music...",
+                value=str(self.current_path),
+                id="path-input",
+            ),
+            Horizontal(
+                Button("Cancel", id="cancel-btn", variant="default"),
+                Button("Change", id="change-btn", variant="primary"),
+                id="dialog-buttons",
+            ),
+            id="dialog-container",
+        )
+
+    def on_mount(self) -> None:
+        """Focus and select input on mount."""
+        path_input = self.query_one("#path-input", Input)
+        path_input.focus()
+        path_input.select_all()
+
+    @on(Button.Pressed, "#cancel-btn")
+    def on_cancel_pressed(self) -> None:
+        """Handle cancel button press."""
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#change-btn")
+    def on_change_pressed(self) -> None:
+        """Handle change button press."""
+        self._submit()
+
+    @on(Input.Submitted)
+    def on_input_submitted(self) -> None:
+        """Handle input submission."""
+        self._submit()
+
+    def _submit(self) -> None:
+        """Submit the new path."""
+        path_input = self.query_one("#path-input", Input)
+        path_str = path_input.value.strip()
+
+        if not path_str:
+            self.notify("Please enter a path", severity="warning")
+            return
+
+        path = Path(path_str).expanduser()
+        if not path.exists():
+            self.notify(f"Path does not exist: {path}", severity="error")
+            return
+
+        if not path.is_dir():
+            self.notify(f"Path is not a directory: {path}", severity="error")
+            return
+
+        self.dismiss(path)
+
+    def action_cancel(self) -> None:
+        """Cancel path change."""
+        self.dismiss(None)
+
+    def action_submit(self) -> None:
+        """Submit path change."""
+        self._submit()
 
 
 class NewPlaylistScreen(Screen[str | None]):

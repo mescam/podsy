@@ -124,11 +124,39 @@
     text-align: center;
     width: 100%;
     color: $text-muted;
-    margin-bottom: 2;
+    margin-bottom: 1;
+}
+
+#mount-path-input {
+    width: 50;
+    margin-bottom: 1;
+}
+
+#no-device-buttons {
+    width: auto;
+    height: auto;
+}
+
+#no-device-buttons Button {
+    margin: 0 1;
 }
 
 #refresh-btn {
     width: auto;
+}
+
+#connect-btn {
+    width: auto;
+}
+
+#current-path-display {
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#path-input {
+    width: 100%;
+    margin-bottom: 1;
 }
 
 /* Dialog styles */

@@ -90,10 +90,19 @@ class PodsyApp(App[None]):
             self.pop_screen()
         self._connect_device()
 
+    def connect_to_path(self, path: Path) -> None:
+        """Connect to an iPod at the specified path.
+
+        Args:
+            path: Path to the iPod mount point
+        """
+        self.device_path = path
+        self.action_refresh()
+
     def action_help(self) -> None:
         """Show help dialog."""
         self.notify(
-            "s: Sync | d: Delete | p: New Playlist | a: Add to Playlist | Tab: Switch Pane",
+            "s: Sync | d: Delete | p: Playlist | a: Add | f: Filter | l: Local Path",
             title="Keyboard Shortcuts",
         )
 
