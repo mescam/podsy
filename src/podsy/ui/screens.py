@@ -134,6 +134,7 @@ class MainScreen(Screen[None]):
         Binding("tab", "switch_focus", "Switch Pane", show=True),
         Binding("s", "sync_selected", "Sync File/Folder", show=True),
         Binding("d", "delete_selected", "Delete", show=True),
+        Binding("D", "delete_library", "Delete Library", show=True),
         Binding("p", "new_playlist", "New Playlist", show=True),
         Binding("a", "add_to_playlist", "Add to Playlist", show=True),
         Binding("f", "focus_filter", "Filter", show=True),
@@ -631,6 +632,40 @@ class MainScreen(Screen[None]):
         except Exception as e:
             self.notify(f"Delete failed: {e}", severity="error")
 
+    def action_delete_library(self) -> None:
+        """Delete entire iPod library after confirmation."""
+        track_count = len(self.database.tracks)
+        if track_count == 0:
+            self.notify("Library is already empty", severity="warning")
+            return
+
+        self.app.push_screen(
+            ConfirmDeleteLibraryScreen(track_count),
+            self._on_delete_library_confirmed,
+        )
+
+    def _on_delete_library_confirmed(self, confirmed: bool | None) -> None:
+        """Handle library deletion confirmation."""
+        if not confirmed:
+            return
+
+        try:
+            # Delete all tracks
+            deleted_count = 0
+            tracks_to_delete = list(
+                self.database.tracks
+            )  # Copy list to avoid modification during iteration
+            for track in tracks_to_delete:
+                remove_track(self.device, self.database, track)
+                deleted_count += 1
+
+            save(self.database, self.device.db_path)
+            self._load_library_tree()
+            self._load_playlists()
+            self.notify(f"Deleted entire library ({deleted_count} tracks)", severity="information")
+        except Exception as e:
+            self.notify(f"Delete failed: {e}", severity="error")
+
     def action_new_playlist(self) -> None:
         """Create a new playlist."""
         self.app.push_screen(NewPlaylistScreen(), self._on_playlist_created)
@@ -919,3 +954,56 @@ class SelectPlaylistScreen(Screen[int | None]):
     def action_cancel(self) -> None:
         """Cancel selection."""
         self.dismiss(None)
+
+
+class ConfirmDeleteLibraryScreen(Screen[bool]):
+    """Modal screen to confirm deletion of entire iPod library."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=True),
+        Binding("enter", "confirm", "Delete", show=True),
+    ]
+
+    def __init__(self, track_count: int) -> None:
+        """Initialize with track count."""
+        super().__init__()
+        self.track_count = track_count
+
+    def compose(self) -> ComposeResult:
+        """Compose the confirmation dialog."""
+        yield Container(
+            Label("Delete Entire Library?", id="dialog-title"),
+            Static(
+                f"This will permanently delete all {self.track_count} tracks\n"
+                "from your iPod. This action cannot be undone.",
+                id="confirm-message",
+            ),
+            Horizontal(
+                Button("Cancel", id="cancel-btn", variant="default"),
+                Button("Delete All", id="delete-btn", variant="error"),
+                id="dialog-buttons",
+            ),
+            id="dialog-container",
+        )
+
+    def on_mount(self) -> None:
+        """Focus cancel button by default for safety."""
+        self.query_one("#cancel-btn", Button).focus()
+
+    @on(Button.Pressed, "#cancel-btn")
+    def on_cancel_pressed(self) -> None:
+        """Handle cancel button press."""
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#delete-btn")
+    def on_delete_pressed(self) -> None:
+        """Handle delete button press."""
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        """Cancel deletion."""
+        self.dismiss(False)
+
+    def action_confirm(self) -> None:
+        """Confirm deletion."""
+        self.dismiss(True)
