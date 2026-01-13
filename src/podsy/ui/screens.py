@@ -169,11 +169,6 @@ class MainScreen(Screen[None]):
         self._focus_left = True
         self._filter_text = ""
         self._sort_by = "artist"
-        # Map tree node data to track IDs
-        self._node_to_track: dict[str, int] = {}
-        # Map artist/album nodes to track IDs for bulk delete
-        self._artist_to_tracks: dict[str, list[int]] = {}
-        self._album_to_tracks: dict[str, list[int]] = {}
         # Track active sync worker
         self._sync_worker: Worker[list] | None = None
 
@@ -254,12 +249,9 @@ class MainScreen(Screen[None]):
 
     def _load_library_tree(self) -> None:
         """Load tracks into the tree view organized by artist/album."""
-        tree = self.query_one("#ipod-tree", Tree)
+        tree: Tree[list[int]] = self.query_one("#ipod-tree", Tree)
         tree.clear()
         tree.root.expand()
-        self._node_to_track.clear()
-        self._artist_to_tracks.clear()
-        self._album_to_tracks.clear()
 
         tracks = self._get_filtered_tracks()
 
@@ -273,7 +265,7 @@ class MainScreen(Screen[None]):
         elif self._sort_by == "date_added":
             tracks.sort(key=lambda t: t.date_added, reverse=True)
 
-        # Build tree structure
+        # Build tree structure - store track IDs in node.data
         if self._sort_by in ("artist", "title", "date_added"):
             # Group by Artist -> Album -> Track
             artists: dict[str, dict[str, list[Track]]] = defaultdict(lambda: defaultdict(list))
@@ -284,26 +276,27 @@ class MainScreen(Screen[None]):
 
             for artist_name in sorted(artists.keys()):
                 artist_label = f"[bold]{artist_name}[/bold]"
-                artist_node = tree.root.add(artist_label, expand=False)
                 artist_track_ids: list[int] = []
 
                 for album_name in sorted(artists[artist_name].keys()):
+                    for track in artists[artist_name][album_name]:
+                        artist_track_ids.append(track.id)
+
+                artist_node = tree.root.add(artist_label, data=artist_track_ids, expand=False)
+
+                for album_name in sorted(artists[artist_name].keys()):
                     album_label = f"[dim]{album_name}[/dim]"
-                    album_node = artist_node.add(album_label, expand=False)
-                    album_key = f"{artist_name}|{album_name}"
                     album_track_ids: list[int] = []
+
+                    for track in artists[artist_name][album_name]:
+                        album_track_ids.append(track.id)
+
+                    album_node = artist_node.add(album_label, data=album_track_ids, expand=False)
 
                     for track in artists[artist_name][album_name]:
                         duration = self._format_duration(track.duration_ms)
                         label = f"{track.title or '(No Title)'} [{duration}]"
-                        album_node.add_leaf(label)
-                        self._node_to_track[label] = track.id
-                        album_track_ids.append(track.id)
-                        artist_track_ids.append(track.id)
-
-                    self._album_to_tracks[album_key] = album_track_ids
-
-                self._artist_to_tracks[artist_name] = artist_track_ids
+                        album_node.add_leaf(label, data=[track.id])
 
         elif self._sort_by == "album":
             # Group by Album -> Artist -> Track
@@ -315,27 +308,27 @@ class MainScreen(Screen[None]):
 
             for album_name in sorted(albums.keys()):
                 album_label = f"[bold]{album_name}[/bold]"
-                album_node = tree.root.add(album_label, expand=False)
                 album_track_ids: list[int] = []
 
                 for artist_name in sorted(albums[album_name].keys()):
+                    for track in albums[album_name][artist_name]:
+                        album_track_ids.append(track.id)
+
+                album_node = tree.root.add(album_label, data=album_track_ids, expand=False)
+
+                for artist_name in sorted(albums[album_name].keys()):
                     artist_label = f"[dim]{artist_name}[/dim]"
-                    artist_node = album_node.add(artist_label, expand=False)
-                    # In album view, use album|artist as key for sub-nodes
-                    sub_key = f"{album_name}|{artist_name}"
-                    sub_track_ids: list[int] = []
+                    artist_track_ids: list[int] = []
+
+                    for track in albums[album_name][artist_name]:
+                        artist_track_ids.append(track.id)
+
+                    artist_node = album_node.add(artist_label, data=artist_track_ids, expand=False)
 
                     for track in albums[album_name][artist_name]:
                         duration = self._format_duration(track.duration_ms)
                         label = f"{track.title or '(No Title)'} [{duration}]"
-                        artist_node.add_leaf(label)
-                        self._node_to_track[label] = track.id
-                        sub_track_ids.append(track.id)
-                        album_track_ids.append(track.id)
-
-                    self._artist_to_tracks[sub_key] = sub_track_ids
-
-                self._album_to_tracks[album_name] = album_track_ids
+                        artist_node.add_leaf(label, data=[track.id])
 
         # Update status with track count
         self._update_status(len(tracks))
@@ -578,54 +571,26 @@ class MainScreen(Screen[None]):
         Returns:
             Tuple of (list of track IDs, description of what's selected)
         """
-        import re
-
-        tree = self.query_one("#ipod-tree", Tree)
+        tree: Tree[list[int]] = self.query_one("#ipod-tree", Tree)
         if tree.cursor_node is None or tree.cursor_node.is_root:
             return [], ""
 
         node = tree.cursor_node
+        track_ids = node.data
+
+        if not track_ids:
+            return [], ""
+
+        # Get clean label for description
         label = str(node.label)
-        clean_label = re.sub(r"\[.*?\]", "", label).strip()
 
-        # First check if this is a track (exists in node_to_track mapping)
-        for node_label, track_id in self._node_to_track.items():
-            clean_node = re.sub(r"\[.*?\]", "", node_label).strip()
-            if clean_node == clean_label:
-                return [track_id], f"track '{clean_label.rsplit(' [', 1)[0]}'"
-
-        # Not a track - check if it's an artist or album node
-        parent = node.parent
-        if parent is not None and parent.is_root:
-            # Top-level node
-            if self._sort_by == "album":
-                # It's an album node
-                if clean_label in self._album_to_tracks:
-                    tracks = self._album_to_tracks[clean_label]
-                    return tracks, f"album '{clean_label}' ({len(tracks)} tracks)"
-            else:
-                # It's an artist node
-                if clean_label in self._artist_to_tracks:
-                    tracks = self._artist_to_tracks[clean_label]
-                    return tracks, f"artist '{clean_label}' ({len(tracks)} tracks)"
-
-        # Second-level node (album under artist, or artist under album)
-        if parent is not None and not parent.is_root:
-            parent_label = re.sub(r"\[.*?\]", "", str(parent.label)).strip()
-            if self._sort_by == "album":
-                # It's an artist under album
-                key = f"{parent_label}|{clean_label}"
-                if key in self._artist_to_tracks:
-                    tracks = self._artist_to_tracks[key]
-                    return tracks, f"'{clean_label}' in '{parent_label}' ({len(tracks)} tracks)"
-            else:
-                # It's an album under artist
-                key = f"{parent_label}|{clean_label}"
-                if key in self._album_to_tracks:
-                    tracks = self._album_to_tracks[key]
-                    return tracks, f"album '{clean_label}' ({len(tracks)} tracks)"
-
-        return [], ""
+        if len(track_ids) == 1:
+            # Single track
+            title = label.rsplit(" [", 1)[0]  # Remove duration
+            return track_ids, f"track '{title}'"
+        else:
+            # Multiple tracks (artist or album)
+            return track_ids, f"'{label}' ({len(track_ids)} tracks)"
 
     def action_delete_selected(self) -> None:
         """Delete selected track, album, or artist from iPod."""
