@@ -252,6 +252,7 @@ class MainScreen(Screen[None]):
         tree: Tree[list[int]] = self.query_one("#ipod-tree", Tree)
         tree.clear()
         tree.root.expand()
+        tree.show_root = False  # Hide the "Library" root node
 
         tracks = self._get_filtered_tracks()
 
@@ -572,6 +573,7 @@ class MainScreen(Screen[None]):
             Tuple of (list of track IDs, description of what's selected)
         """
         tree: Tree[list[int]] = self.query_one("#ipod-tree", Tree)
+
         if tree.cursor_node is None or tree.cursor_node.is_root:
             return [], ""
 
