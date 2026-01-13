@@ -106,6 +106,31 @@
     padding: 0 1;
 }
 
+/* Progress bar container */
+#progress-container {
+    dock: bottom;
+    height: 3;
+    background: $surface;
+    border-top: solid $primary;
+    padding: 0 1;
+    align: left middle;
+}
+
+#progress-label {
+    width: auto;
+    min-width: 30;
+    padding: 0 1;
+}
+
+#sync-progress {
+    width: 1fr;
+    margin: 0 1;
+}
+
+#cancel-sync-btn {
+    width: auto;
+}
+
 /* No device screen */
 #no-device-container {
     align: center middle;

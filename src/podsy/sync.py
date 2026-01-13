@@ -9,8 +9,10 @@ import hashlib
 import random
 import shutil
 import string
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 
 from mutagen import File as MutagenFile  # type: ignore[attr-defined]
 from mutagen.easyid3 import EasyID3
@@ -331,9 +333,7 @@ def sync_file(
                 and existing.artist == metadata["artist"]
                 and existing.album == metadata["album"]
             ):
-                raise SyncError(
-                    f"Track already exists: {metadata['artist']} - {metadata['title']}"
-                )
+                raise SyncError(f"Track already exists: {metadata['artist']} - {metadata['title']}")
 
     # Select destination folder and generate filename
     dest_folder = select_music_folder(device)
@@ -420,6 +420,28 @@ def remove_track(device: IPodDevice, db: Database, track: Track) -> None:
         playlist.track_ids = [tid for tid in playlist.track_ids if tid != track.id]
 
 
+class SyncProgressCallback(Protocol):
+    """Protocol for sync progress callbacks."""
+
+    def __call__(
+        self,
+        current: int,
+        total: int,
+        filename: str,
+        *,
+        error: str | None = None,
+    ) -> None:
+        """Report sync progress.
+
+        Args:
+            current: Current file number (1-indexed)
+            total: Total number of files
+            filename: Name of the file being processed
+            error: Error message if this file failed, None if successful
+        """
+        ...
+
+
 def sync_folder(
     device: IPodDevice,
     db: Database,
@@ -427,6 +449,7 @@ def sync_folder(
     *,
     recursive: bool = True,
     create_playlist: bool = False,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> list[Track]:
     """Sync all music files from a folder to the iPod.
 
@@ -436,6 +459,7 @@ def sync_folder(
         folder: Source folder path
         recursive: Whether to process subfolders
         create_playlist: Whether to create a playlist with the folder name
+        progress_callback: Optional callback(current, total, filename) for progress
 
     Returns:
         List of successfully synced Track objects
@@ -450,14 +474,16 @@ def sync_folder(
     files = list(folder.rglob("*")) if recursive else list(folder.iterdir())
 
     # Filter to supported formats
-    music_files = [
-        f for f in files if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
-    ]
+    music_files = [f for f in files if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS]
 
     # Sort by path for consistent ordering
     music_files.sort()
 
-    for file in music_files:
+    total = len(music_files)
+    for i, file in enumerate(music_files, 1):
+        if progress_callback:
+            progress_callback(i, total, file.name)
+
         try:
             track = sync_file(device, db, file, check_duplicate=True)
             synced.append(track)

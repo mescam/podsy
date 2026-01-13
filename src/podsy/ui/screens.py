@@ -18,10 +18,12 @@ from textual.widgets import (
     Label,
     ListItem,
     ListView,
+    ProgressBar,
     Select,
     Static,
     Tree,
 )
+from textual.worker import Worker, WorkerState
 
 from ..db import Database, save
 from ..db.models import Track
@@ -31,7 +33,7 @@ from ..playlists import (
     add_track_to_playlist,
     create_playlist,
 )
-from ..sync import SyncError, remove_track, sync_file, sync_folder
+from ..sync import SyncError, remove_track, sync_file
 
 if TYPE_CHECKING:
     pass
@@ -169,6 +171,11 @@ class MainScreen(Screen[None]):
         self._sort_by = "artist"
         # Map tree node data to track IDs
         self._node_to_track: dict[str, int] = {}
+        # Map artist/album nodes to track IDs for bulk delete
+        self._artist_to_tracks: dict[str, list[int]] = {}
+        self._album_to_tracks: dict[str, list[int]] = {}
+        # Track active sync worker
+        self._sync_worker: Worker[list] | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the main screen layout."""
@@ -202,6 +209,12 @@ class MainScreen(Screen[None]):
             yield ListView(id="playlist-list")
             yield Button("+ New", id="new-playlist-btn", variant="primary")
 
+        # Progress bar for sync operations (hidden by default)
+        with Horizontal(id="progress-container"):
+            yield Label("Syncing...", id="progress-label")
+            yield ProgressBar(total=100, id="sync-progress", show_eta=False)
+            yield Button("Cancel", id="cancel-sync-btn", variant="error")
+
         # Status bar
         yield Static("", id="status-bar")
         yield Footer()
@@ -211,16 +224,15 @@ class MainScreen(Screen[None]):
         self._load_library_tree()
         self._load_playlists()
         self._update_status()
+        # Hide progress bar initially
+        self.query_one("#progress-container").display = False
 
     def _get_filtered_tracks(self) -> list[Track]:
         """Get tracks filtered by current filter text and playlist."""
         if self.current_playlist_id is not None:
             playlist = self.database.get_playlist_by_id(self.current_playlist_id)
             if playlist:
-                tracks = [
-                    self.database.get_track_by_id(tid)
-                    for tid in playlist.track_ids
-                ]
+                tracks = [self.database.get_track_by_id(tid) for tid in playlist.track_ids]
                 tracks = [t for t in tracks if t is not None]
             else:
                 tracks = []
@@ -231,7 +243,8 @@ class MainScreen(Screen[None]):
         if self._filter_text:
             filter_lower = self._filter_text.lower()
             tracks = [
-                t for t in tracks
+                t
+                for t in tracks
                 if (t.title and filter_lower in t.title.lower())
                 or (t.artist and filter_lower in t.artist.lower())
                 or (t.album and filter_lower in t.album.lower())
@@ -245,6 +258,8 @@ class MainScreen(Screen[None]):
         tree.clear()
         tree.root.expand()
         self._node_to_track.clear()
+        self._artist_to_tracks.clear()
+        self._album_to_tracks.clear()
 
         tracks = self._get_filtered_tracks()
 
@@ -261,43 +276,66 @@ class MainScreen(Screen[None]):
         # Build tree structure
         if self._sort_by in ("artist", "title", "date_added"):
             # Group by Artist -> Album -> Track
-            artists: dict[str, dict[str, list[Track]]] = defaultdict(
-                lambda: defaultdict(list)
-            )
+            artists: dict[str, dict[str, list[Track]]] = defaultdict(lambda: defaultdict(list))
             for track in tracks:
                 artist = track.artist or "(Unknown Artist)"
                 album = track.album or "(Unknown Album)"
                 artists[artist][album].append(track)
 
             for artist_name in sorted(artists.keys()):
-                artist_node = tree.root.add(f"[bold]{artist_name}[/bold]", expand=False)
+                artist_label = f"[bold]{artist_name}[/bold]"
+                artist_node = tree.root.add(artist_label, expand=False)
+                artist_track_ids: list[int] = []
+
                 for album_name in sorted(artists[artist_name].keys()):
-                    album_node = artist_node.add(f"[dim]{album_name}[/dim]", expand=False)
+                    album_label = f"[dim]{album_name}[/dim]"
+                    album_node = artist_node.add(album_label, expand=False)
+                    album_key = f"{artist_name}|{album_name}"
+                    album_track_ids: list[int] = []
+
                     for track in artists[artist_name][album_name]:
                         duration = self._format_duration(track.duration_ms)
                         label = f"{track.title or '(No Title)'} [{duration}]"
                         album_node.add_leaf(label)
                         self._node_to_track[label] = track.id
+                        album_track_ids.append(track.id)
+                        artist_track_ids.append(track.id)
+
+                    self._album_to_tracks[album_key] = album_track_ids
+
+                self._artist_to_tracks[artist_name] = artist_track_ids
 
         elif self._sort_by == "album":
             # Group by Album -> Artist -> Track
-            albums: dict[str, dict[str, list[Track]]] = defaultdict(
-                lambda: defaultdict(list)
-            )
+            albums: dict[str, dict[str, list[Track]]] = defaultdict(lambda: defaultdict(list))
             for track in tracks:
                 album = track.album or "(Unknown Album)"
                 artist = track.artist or "(Unknown Artist)"
                 albums[album][artist].append(track)
 
             for album_name in sorted(albums.keys()):
-                album_node = tree.root.add(f"[bold]{album_name}[/bold]", expand=False)
+                album_label = f"[bold]{album_name}[/bold]"
+                album_node = tree.root.add(album_label, expand=False)
+                album_track_ids: list[int] = []
+
                 for artist_name in sorted(albums[album_name].keys()):
-                    artist_node = album_node.add(f"[dim]{artist_name}[/dim]", expand=False)
+                    artist_label = f"[dim]{artist_name}[/dim]"
+                    artist_node = album_node.add(artist_label, expand=False)
+                    # In album view, use album|artist as key for sub-nodes
+                    sub_key = f"{album_name}|{artist_name}"
+                    sub_track_ids: list[int] = []
+
                     for track in albums[album_name][artist_name]:
                         duration = self._format_duration(track.duration_ms)
                         label = f"{track.title or '(No Title)'} [{duration}]"
                         artist_node.add_leaf(label)
                         self._node_to_track[label] = track.id
+                        sub_track_ids.append(track.id)
+                        album_track_ids.append(track.id)
+
+                    self._artist_to_tracks[sub_key] = sub_track_ids
+
+                self._album_to_tracks[album_name] = album_track_ids
 
         # Update status with track count
         self._update_status(len(tracks))
@@ -312,7 +350,8 @@ class MainScreen(Screen[None]):
     def _load_playlists(self) -> None:
         """Load playlists into the playlist list."""
         playlist_list = self.query_one("#playlist-list", ListView)
-        playlist_list.clear()
+        # Remove all children to avoid ID conflicts
+        playlist_list.remove_children()
 
         # Add "All Songs" option
         playlist_list.append(ListItem(Label("All Songs"), id="playlist-all"))
@@ -333,36 +372,32 @@ class MainScreen(Screen[None]):
         total_count = len(self.database.tracks)
         if visible_count is None:
             visible_count = total_count
-        free_mb = self.device.free_space // (1024 * 1024)
-        total_mb = self.device.total_space // (1024 * 1024)
+
+        free_bytes = self.device.free_space
+        total_bytes = self.device.total_space
+        used_bytes = total_bytes - free_bytes
+
+        # Format sizes intelligently (GB for large values, MB otherwise)
+        def format_size(size_bytes: int) -> str:
+            if size_bytes >= 1024 * 1024 * 1024:  # >= 1 GB
+                return f"{size_bytes / (1024 * 1024 * 1024):.1f}GB"
+            else:
+                return f"{size_bytes // (1024 * 1024)}MB"
+
+        free_str = format_size(free_bytes)
+        used_str = format_size(used_bytes)
+        total_str = format_size(total_bytes)
+
+        # Calculate usage percentage
+        used_pct = (used_bytes / total_bytes * 100) if total_bytes > 0 else 0
 
         if visible_count != total_count:
             count_str = f"{visible_count}/{total_count} tracks"
         else:
             count_str = f"{total_count} tracks"
 
-        status.update(
-            f"{count_str} | {free_mb}MB free / {total_mb}MB total | {self.device.model}"
-        )
-
-    def _get_selected_track_id(self) -> int | None:
-        """Get the track ID of the currently selected tree node."""
-        tree = self.query_one("#ipod-tree", Tree)
-        if tree.cursor_node is None:
-            return None
-
-        label = str(tree.cursor_node.label)
-        # Strip markup
-        import re
-        clean_label = re.sub(r'\[.*?\]', '', label)
-        
-        # Try to find in our mapping
-        for node_label, track_id in self._node_to_track.items():
-            clean_node = re.sub(r'\[.*?\]', '', node_label)
-            if clean_node == clean_label:
-                return track_id
-
-        return None
+        disk_info = f"Disk: {used_str}/{total_str} ({used_pct:.0f}%) - {free_str} free"
+        status.update(f"{count_str} | {disk_info} | {self.device.model}")
 
     def action_switch_focus(self) -> None:
         """Switch focus between panes."""
@@ -400,7 +435,7 @@ class MainScreen(Screen[None]):
         path = selected.data.path
 
         if path.is_file():
-            # Sync single file
+            # Sync single file (fast, no progress bar needed)
             try:
                 track = sync_file(self.device, self.database, path)
                 save(self.database, self.device.db_path)
@@ -412,48 +447,215 @@ class MainScreen(Screen[None]):
                 self.notify(f"Error: {e}", severity="error")
 
         elif path.is_dir():
-            # Sync entire folder
+            # Sync entire folder with progress bar
+            self._start_folder_sync(path)
+
+    def _start_folder_sync(self, folder: Path) -> None:
+        """Start syncing a folder with progress tracking."""
+        # Show progress bar
+        progress_container = self.query_one("#progress-container")
+        progress_container.display = True
+        progress_bar = self.query_one("#sync-progress", ProgressBar)
+        progress_label = self.query_one("#progress-label", Label)
+
+        # Reset progress
+        progress_bar.update(total=100, progress=0)
+        progress_label.update(f"Scanning {folder.name}...")
+
+        # Start worker thread
+        self._sync_worker = self.run_worker(
+            self._sync_folder_worker(folder),
+            name="folder_sync",
+            exclusive=True,
+        )
+
+    async def _sync_folder_worker(self, folder: Path) -> list:
+        """Worker to sync folder in background thread."""
+        from ..sync import SUPPORTED_EXTENSIONS
+
+        # First, count files to set up progress bar
+        files = list(folder.rglob("*"))
+        music_files = [f for f in files if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS]
+        total = len(music_files)
+
+        if total == 0:
+            self.app.call_from_thread(self._on_sync_complete, [], folder.name)
+            return []
+
+        # Update progress bar total
+        self.app.call_from_thread(self._update_progress_total, total)
+
+        synced: list = []
+        errors: list[tuple[Path, str]] = []
+
+        for i, file in enumerate(sorted(music_files), 1):
+            # Update progress
+            self.app.call_from_thread(self._update_progress, i, total, file.name)
+
             try:
-                self.notify(f"Syncing folder: {path.name}...", severity="information")
-                tracks = sync_folder(
-                    self.device,
-                    self.database,
-                    path,
-                    recursive=True,
-                    create_playlist=True,
-                )
-                save(self.database, self.device.db_path)
-                self._load_library_tree()
-                self._load_playlists()
-                if tracks:
-                    self.notify(
-                        f"Synced {len(tracks)} tracks from {path.name}",
-                        severity="information",
-                    )
-                else:
-                    self.notify(f"No music files found in {path.name}", severity="warning")
+                track = sync_file(self.device, self.database, file, check_duplicate=True)
+                synced.append(track)
             except SyncError as e:
-                self.notify(f"Sync failed: {e}", severity="error")
+                errors.append((file, str(e)))
             except Exception as e:
-                self.notify(f"Error: {e}", severity="error")
+                errors.append((file, f"Unexpected error: {e}"))
+
+        # Create playlist if we synced some tracks
+        if synced:
+            from ..playlists import DuplicatePlaylistError
+            from ..playlists import create_playlist as make_playlist
+
+            playlist_name = folder.name
+            base_name = playlist_name
+            counter = 1
+            while self.database.get_playlist_by_name(playlist_name) is not None:
+                counter += 1
+                playlist_name = f"{base_name} ({counter})"
+
+            try:
+                playlist = make_playlist(self.database, playlist_name)
+                for track in synced:
+                    playlist.track_ids.append(track.id)
+            except DuplicatePlaylistError:
+                pass
+
+        # Save database and update UI
+        self.app.call_from_thread(self._on_sync_complete, synced, folder.name)
+        return synced
+
+    def _update_progress_total(self, total: int) -> None:
+        """Update progress bar total (called from worker thread)."""
+        progress_bar = self.query_one("#sync-progress", ProgressBar)
+        progress_bar.update(total=total, progress=0)
+
+    def _update_progress(self, current: int, total: int, filename: str) -> None:
+        """Update progress bar (called from worker thread)."""
+        progress_bar = self.query_one("#sync-progress", ProgressBar)
+        progress_label = self.query_one("#progress-label", Label)
+        progress_bar.update(progress=current)
+        progress_label.update(f"[{current}/{total}] {filename}")
+
+    def _on_sync_complete(self, synced: list, folder_name: str) -> None:
+        """Handle sync completion (called from worker thread)."""
+        # Hide progress bar
+        progress_container = self.query_one("#progress-container")
+        progress_container.display = False
+
+        # Save database
+        save(self.database, self.device.db_path)
+
+        # Refresh UI
+        self._load_library_tree()
+        self._load_playlists()
+
+        # Show result notification
+        if synced:
+            self.notify(
+                f"Synced {len(synced)} tracks from {folder_name}",
+                severity="information",
+            )
+        else:
+            self.notify(f"No music files found in {folder_name}", severity="warning")
+
+        self._sync_worker = None
+
+    @on(Button.Pressed, "#cancel-sync-btn")
+    def on_cancel_sync_pressed(self) -> None:
+        """Handle cancel sync button press."""
+        if self._sync_worker and self._sync_worker.state == WorkerState.RUNNING:
+            self._sync_worker.cancel()
+            self.query_one("#progress-container").display = False
+            self.notify("Sync cancelled", severity="warning")
+            # Save any progress made so far
+            save(self.database, self.device.db_path)
+            self._load_library_tree()
+            self._load_playlists()
+            self._sync_worker = None
+
+    def _get_selected_node_tracks(self) -> tuple[list[int], str]:
+        """Get track IDs for the currently selected tree node.
+
+        Returns:
+            Tuple of (list of track IDs, description of what's selected)
+        """
+        import re
+
+        tree = self.query_one("#ipod-tree", Tree)
+        if tree.cursor_node is None or tree.cursor_node.is_root:
+            return [], ""
+
+        node = tree.cursor_node
+        label = str(node.label)
+        clean_label = re.sub(r"\[.*?\]", "", label).strip()
+
+        # Check if it's a leaf node (track) - leaf nodes have no children
+        is_leaf = len(node.children) == 0
+        if is_leaf:
+            for node_label, track_id in self._node_to_track.items():
+                clean_node = re.sub(r"\[.*?\]", "", node_label).strip()
+                if clean_node == clean_label:
+                    return [track_id], f"track '{clean_label.rsplit(' [', 1)[0]}'"
+            return [], ""
+
+        # Check if it's a top-level node (artist or album depending on sort)
+        parent = node.parent
+        if parent is not None and parent.is_root:
+            # Top-level node
+            if self._sort_by == "album":
+                # It's an album node
+                if clean_label in self._album_to_tracks:
+                    tracks = self._album_to_tracks[clean_label]
+                    return tracks, f"album '{clean_label}' ({len(tracks)} tracks)"
+            else:
+                # It's an artist node
+                if clean_label in self._artist_to_tracks:
+                    tracks = self._artist_to_tracks[clean_label]
+                    return tracks, f"artist '{clean_label}' ({len(tracks)} tracks)"
+        else:
+            # Second-level node (album under artist, or artist under album)
+            if parent is not None:
+                parent_label = re.sub(r"\[.*?\]", "", str(parent.label)).strip()
+                if self._sort_by == "album":
+                    # It's an artist under album
+                    key = f"{parent_label}|{clean_label}"
+                    if key in self._artist_to_tracks:
+                        tracks = self._artist_to_tracks[key]
+                        return tracks, f"'{clean_label}' in '{parent_label}' ({len(tracks)} tracks)"
+                else:
+                    # It's an album under artist
+                    key = f"{parent_label}|{clean_label}"
+                    if key in self._album_to_tracks:
+                        tracks = self._album_to_tracks[key]
+                        return tracks, f"album '{clean_label}' ({len(tracks)} tracks)"
+
+        return [], ""
 
     def action_delete_selected(self) -> None:
-        """Delete selected track from iPod."""
-        track_id = self._get_selected_track_id()
-        if track_id is None:
+        """Delete selected track, album, or artist from iPod."""
+        track_ids, description = self._get_selected_node_tracks()
+
+        if not track_ids:
             self.notify("No track selected", severity="warning")
             return
 
         try:
-            track = self.database.get_track_by_id(track_id)
-            if track is None:
-                return
+            deleted_count = 0
+            for track_id in track_ids:
+                track = self.database.get_track_by_id(track_id)
+                if track is not None:
+                    remove_track(self.device, self.database, track)
+                    deleted_count += 1
 
-            remove_track(self.device, self.database, track)
             save(self.database, self.device.db_path)
             self._load_library_tree()
             self._load_playlists()
-            self.notify(f"Deleted: {track.title}", severity="information")
+
+            if deleted_count == 1:
+                self.notify(f"Deleted: {description}", severity="information")
+            else:
+                self.notify(
+                    f"Deleted {deleted_count} tracks from {description}", severity="information"
+                )
         except Exception as e:
             self.notify(f"Delete failed: {e}", severity="error")
 
@@ -473,9 +675,9 @@ class MainScreen(Screen[None]):
                 self.notify(f"Failed: {e}", severity="error")
 
     def action_add_to_playlist(self) -> None:
-        """Add selected track to a playlist."""
-        track_id = self._get_selected_track_id()
-        if track_id is None:
+        """Add selected track(s) to a playlist."""
+        track_ids, description = self._get_selected_node_tracks()
+        if not track_ids:
             self.notify("No track selected", severity="warning")
             return
 
@@ -487,19 +689,30 @@ class MainScreen(Screen[None]):
 
         self.app.push_screen(
             SelectPlaylistScreen(playlists),
-            lambda pid: self._on_playlist_selected(pid, track_id),
+            lambda pid: self._on_playlist_selected(pid, track_ids, description),
         )
 
-    def _on_playlist_selected(self, playlist_id: int | None, track_id: int) -> None:
-        """Handle playlist selection for adding track."""
+    def _on_playlist_selected(
+        self, playlist_id: int | None, track_ids: list[int], description: str
+    ) -> None:
+        """Handle playlist selection for adding tracks."""
         if playlist_id:
             try:
-                add_track_to_playlist(self.database, playlist_id, track_id)
+                added = 0
+                for track_id in track_ids:
+                    try:
+                        add_track_to_playlist(self.database, playlist_id, track_id)
+                        added += 1
+                    except PlaylistError:
+                        pass  # Skip duplicates
                 save(self.database, self.device.db_path)
                 self._load_playlists()
                 playlist = self.database.get_playlist_by_id(playlist_id)
                 name = playlist.name if playlist else "Unknown"
-                self.notify(f"Added to playlist: {name}", severity="information")
+                if added == 1:
+                    self.notify(f"Added to playlist: {name}", severity="information")
+                else:
+                    self.notify(f"Added {added} tracks to: {name}", severity="information")
             except PlaylistError as e:
                 self.notify(f"Failed: {e}", severity="error")
 
