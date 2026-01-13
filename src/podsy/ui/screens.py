@@ -334,6 +334,10 @@ class MainScreen(Screen[None]):
         # Update status with track count
         self._update_status(len(tracks))
 
+        # Ensure cursor is set to first item if tree has content
+        if tree.cursor_line < 0 and len(tracks) > 0:
+            tree.cursor_line = 0
+
     def _format_duration(self, duration_ms: int) -> str:
         """Format duration in milliseconds to mm:ss."""
         duration_sec = duration_ms // 1000
@@ -458,12 +462,13 @@ class MainScreen(Screen[None]):
 
         # Start worker thread
         self._sync_worker = self.run_worker(
-            self._sync_folder_worker(folder),
+            lambda: self._sync_folder_worker(folder),
             name="folder_sync",
             exclusive=True,
+            thread=True,
         )
 
-    async def _sync_folder_worker(self, folder: Path) -> list:
+    def _sync_folder_worker(self, folder: Path) -> list:
         """Worker to sync folder in background thread."""
         from ..sync import SUPPORTED_EXTENSIONS
 
