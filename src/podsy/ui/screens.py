@@ -351,8 +351,11 @@ class MainScreen(Screen[None]):
         # Remove all children to avoid ID conflicts
         playlist_list.remove_children()
 
-        # Add "All Songs" option
-        playlist_list.append(ListItem(Label("All Songs"), id="playlist-all"))
+        # Add "All Songs" option (use unique ID with timestamp to avoid conflicts)
+        import time
+
+        ts = int(time.time() * 1000000)
+        playlist_list.append(ListItem(Label("All Songs"), id=f"playlist-all-{ts}"))
 
         # Add user playlists
         for playlist in self.database.playlists:
@@ -360,7 +363,7 @@ class MainScreen(Screen[None]):
                 playlist_list.append(
                     ListItem(
                         Label(f"{playlist.name} ({len(playlist.track_ids)})"),
-                        id=f"playlist-{playlist.id}",
+                        id=f"playlist-{playlist.id}-{ts}",
                     )
                 )
 
@@ -689,11 +692,16 @@ class MainScreen(Screen[None]):
     def on_playlist_selected(self, event: ListView.Selected) -> None:
         """Handle playlist selection."""
         item_id = event.item.id or ""
-        if item_id == "playlist-all":
+        if item_id.startswith("playlist-all"):
             self.current_playlist_id = None
         elif item_id.startswith("playlist-"):
+            # Extract playlist ID: "playlist-{id}-{timestamp}" -> id
             try:
-                self.current_playlist_id = int(item_id.replace("playlist-", ""))
+                parts = item_id.split("-")
+                if len(parts) >= 2:
+                    self.current_playlist_id = int(parts[1])
+                else:
+                    self.current_playlist_id = None
             except ValueError:
                 self.current_playlist_id = None
         self._load_library_tree()
