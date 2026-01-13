@@ -355,6 +355,11 @@ def sync_file(
     folder_name = dest_folder.name
     ipod_path = f":iPod_Control:Music:{folder_name}:{dest_filename}"
 
+    # Calculate sample_count for gapless playback (required for iPod to not skip tracks)
+    duration_ms = int(metadata.get("duration_ms", 0))
+    sample_rate = int(metadata.get("sample_rate", 44100))
+    sample_count = int((duration_ms / 1000.0) * sample_rate)
+
     # Create track
     track = Track(
         id=db.next_track_id(),
@@ -366,9 +371,9 @@ def sync_file(
         composer=str(metadata.get("composer", "")),
         comment=str(metadata.get("comment", "")),
         path=ipod_path,
-        duration_ms=int(metadata.get("duration_ms", 0)),
+        duration_ms=duration_ms,
         bitrate=int(metadata.get("bitrate", 0)),
-        sample_rate=int(metadata.get("sample_rate", 44100)),
+        sample_rate=sample_rate,
         size_bytes=dest_path.stat().st_size,
         track_number=int(metadata.get("track_number", 0)),
         total_tracks=int(metadata.get("total_tracks", 0)),
@@ -378,6 +383,7 @@ def sync_file(
         file_type=file_type,
         media_type=MediaType.AUDIO,
         date_added=datetime.now(),
+        sample_count=sample_count,
     )
 
     # Add to database
