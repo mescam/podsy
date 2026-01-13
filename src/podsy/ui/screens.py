@@ -588,16 +588,13 @@ class MainScreen(Screen[None]):
         label = str(node.label)
         clean_label = re.sub(r"\[.*?\]", "", label).strip()
 
-        # Check if it's a leaf node (track) - leaf nodes have no children
-        is_leaf = len(node.children) == 0
-        if is_leaf:
-            for node_label, track_id in self._node_to_track.items():
-                clean_node = re.sub(r"\[.*?\]", "", node_label).strip()
-                if clean_node == clean_label:
-                    return [track_id], f"track '{clean_label.rsplit(' [', 1)[0]}'"
-            return [], ""
+        # First check if this is a track (exists in node_to_track mapping)
+        for node_label, track_id in self._node_to_track.items():
+            clean_node = re.sub(r"\[.*?\]", "", node_label).strip()
+            if clean_node == clean_label:
+                return [track_id], f"track '{clean_label.rsplit(' [', 1)[0]}'"
 
-        # Check if it's a top-level node (artist or album depending on sort)
+        # Not a track - check if it's an artist or album node
         parent = node.parent
         if parent is not None and parent.is_root:
             # Top-level node
@@ -611,22 +608,22 @@ class MainScreen(Screen[None]):
                 if clean_label in self._artist_to_tracks:
                     tracks = self._artist_to_tracks[clean_label]
                     return tracks, f"artist '{clean_label}' ({len(tracks)} tracks)"
-        else:
-            # Second-level node (album under artist, or artist under album)
-            if parent is not None:
-                parent_label = re.sub(r"\[.*?\]", "", str(parent.label)).strip()
-                if self._sort_by == "album":
-                    # It's an artist under album
-                    key = f"{parent_label}|{clean_label}"
-                    if key in self._artist_to_tracks:
-                        tracks = self._artist_to_tracks[key]
-                        return tracks, f"'{clean_label}' in '{parent_label}' ({len(tracks)} tracks)"
-                else:
-                    # It's an album under artist
-                    key = f"{parent_label}|{clean_label}"
-                    if key in self._album_to_tracks:
-                        tracks = self._album_to_tracks[key]
-                        return tracks, f"album '{clean_label}' ({len(tracks)} tracks)"
+
+        # Second-level node (album under artist, or artist under album)
+        if parent is not None and not parent.is_root:
+            parent_label = re.sub(r"\[.*?\]", "", str(parent.label)).strip()
+            if self._sort_by == "album":
+                # It's an artist under album
+                key = f"{parent_label}|{clean_label}"
+                if key in self._artist_to_tracks:
+                    tracks = self._artist_to_tracks[key]
+                    return tracks, f"'{clean_label}' in '{parent_label}' ({len(tracks)} tracks)"
+            else:
+                # It's an album under artist
+                key = f"{parent_label}|{clean_label}"
+                if key in self._album_to_tracks:
+                    tracks = self._album_to_tracks[key]
+                    return tracks, f"album '{clean_label}' ({len(tracks)} tracks)"
 
         return [], ""
 
