@@ -729,9 +729,9 @@ def _build_mhit(track: Track) -> bytes:
     mhit.write(struct.pack("<B", 0))  # checked
     mhit.write(struct.pack("<B", 0))  # app_rating
     mhit.write(struct.pack("<H", 0))  # bpm
-    mhit.write(struct.pack("<H", 0))  # artwork_count
+    mhit.write(struct.pack("<H", track.artwork_count))  # artwork_count
     mhit.write(struct.pack("<H", 0xFFFF))  # unknown9
-    mhit.write(struct.pack("<I", 0))  # artwork_size
+    mhit.write(struct.pack("<I", track.artwork_size))  # artwork_size
     mhit.write(struct.pack("<I", 0))  # unknown11
     mhit.write(struct.pack("<f", float(track.sample_rate)))  # sample_rate_float
     mhit.write(struct.pack("<I", 0))  # date_released
@@ -741,7 +741,7 @@ def _build_mhit(track: Track) -> bytes:
     mhit.write(struct.pack("<I", 0))  # unknown16
     mhit.write(struct.pack("<I", track.skip_count))
     mhit.write(struct.pack("<I", 0))  # last_skipped
-    mhit.write(struct.pack("<B", 0x02))  # has_artwork (0x02 = no)
+    mhit.write(struct.pack("<B", 0x01 if track.has_artwork else 0x02))  # has_artwork
     mhit.write(struct.pack("<B", 0))  # skip_when_shuffling
     mhit.write(struct.pack("<B", 0))  # remember_position
     mhit.write(struct.pack("<B", 0))  # podcast_flag

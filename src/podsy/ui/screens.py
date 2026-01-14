@@ -26,6 +26,7 @@ from textual.widgets import (
 from textual.worker import Worker, WorkerState
 
 from ..db import Database, save
+from ..db.artworkdb import ArtworkDB, save_artworkdb
 from ..db.models import Track
 from ..device import IPodDevice
 from ..playlists import (
@@ -172,6 +173,8 @@ class MainScreen(Screen[None]):
         self._sort_by = "artist"
         # Track active sync worker
         self._sync_worker: Worker[list] | None = None
+        # Artwork database for album art
+        self._artwork_db = ArtworkDB()
 
     def compose(self) -> ComposeResult:
         """Compose the main screen layout."""
@@ -439,8 +442,11 @@ class MainScreen(Screen[None]):
         if path.is_file():
             # Sync single file (fast, no progress bar needed)
             try:
-                track = sync_file(self.device, self.database, path)
+                track = sync_file(
+                    self.device, self.database, path, artwork_db=self._artwork_db
+                )
                 save(self.database, self.device.db_path)
+                save_artworkdb(self._artwork_db, self.device.artwork_dir)
                 self._load_library_tree()
                 self.notify(f"Synced: {track.title}", severity="information")
             except SyncError as e:
@@ -503,7 +509,13 @@ class MainScreen(Screen[None]):
             self.app.call_from_thread(self._update_progress, i, total, file.name)
 
             try:
-                track = sync_file(self.device, self.database, file, check_duplicate=True)
+                track = sync_file(
+                    self.device,
+                    self.database,
+                    file,
+                    check_duplicate=True,
+                    artwork_db=self._artwork_db,
+                )
                 synced.append(track)
             except SyncError as e:
                 errors.append((file, str(e)))
@@ -551,8 +563,9 @@ class MainScreen(Screen[None]):
         progress_container = self.query_one("#progress-container")
         progress_container.display = False
 
-        # Save database
+        # Save databases
         save(self.database, self.device.db_path)
+        save_artworkdb(self._artwork_db, self.device.artwork_dir)
 
         # Refresh UI
         self._load_library_tree()

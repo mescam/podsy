@@ -22,6 +22,16 @@ class IPodDevice:
     firmware_version: str = ""
 
     @property
+    def artwork_dir(self) -> Path:
+        """Get the Artwork directory path."""
+        return self.mount_point / "iPod_Control" / "Artwork"
+
+    @property
+    def artworkdb_path(self) -> Path:
+        """Get the ArtworkDB file path."""
+        return self.artwork_dir / "ArtworkDB"
+
+    @property
     def is_valid(self) -> bool:
         """Check if the device has a valid iTunesDB."""
         return self.db_path.exists()

@@ -8,6 +8,7 @@ dependencies = [
     "textual>=3.0",
     "construct>=2.10",
     "mutagen>=1.47",
+    "pillow>=10.0",
 ]
 
 [project.scripts]

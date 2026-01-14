@@ -114,6 +114,11 @@ class Track:
     compilation: bool = False
     dbid: int = 0  # 64-bit unique ID for artwork linking
 
+    # Artwork fields
+    has_artwork: bool = False
+    artwork_count: int = 0
+    artwork_size: int = 0
+
     # Gapless playback fields
     pregap: int = 0
     postgap: int = 0

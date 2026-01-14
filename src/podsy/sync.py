@@ -20,6 +20,8 @@ from mutagen.id3 import ID3
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
 
+from .artwork import extract_artwork, generate_artwork_formats, get_artwork_size
+from .db.artworkdb import ArtworkDB, add_artwork_to_db
 from .db.models import Database, FileType, MediaType, Track
 from .device import IPodDevice, ensure_music_folders
 
@@ -299,6 +301,7 @@ def sync_file(
     source: Path,
     *,
     check_duplicate: bool = True,
+    artwork_db: ArtworkDB | None = None,
 ) -> Track:
     """Copy a music file to the iPod and register it in the database.
 
@@ -307,6 +310,7 @@ def sync_file(
         db: Database to update
         source: Source file path
         check_duplicate: Whether to check for existing tracks with same title/artist
+        artwork_db: Optional ArtworkDB for artwork storage
 
     Returns:
         The created Track object
@@ -360,6 +364,34 @@ def sync_file(
     sample_rate = int(metadata.get("sample_rate", 44100))
     sample_count = int((duration_ms / 1000.0) * sample_rate)
 
+    # Generate unique dbid for artwork linking
+    dbid = random.randint(1, 2**63 - 1)
+
+    # Extract and process artwork
+    has_artwork = False
+    artwork_count = 0
+    artwork_size = 0
+
+    raw_artwork = extract_artwork(source)
+    if raw_artwork and artwork_db is not None:
+        try:
+            artwork_formats = generate_artwork_formats(raw_artwork)
+            if artwork_formats:
+                add_artwork_to_db(
+                    artwork_db,
+                    device.artwork_dir,
+                    dbid,
+                    artwork_formats,
+                )
+                has_artwork = True
+                artwork_count = len(artwork_formats)
+                # Calculate total artwork size
+                for fmt_id in artwork_formats:
+                    artwork_size += get_artwork_size(fmt_id)
+        except Exception:
+            # Artwork extraction failed, continue without artwork
+            pass
+
     # Create track
     track = Track(
         id=db.next_track_id(),
@@ -384,6 +416,10 @@ def sync_file(
         media_type=MediaType.AUDIO,
         date_added=datetime.now(),
         sample_count=sample_count,
+        dbid=dbid,
+        has_artwork=has_artwork,
+        artwork_count=artwork_count,
+        artwork_size=artwork_size,
     )
 
     # Add to database
