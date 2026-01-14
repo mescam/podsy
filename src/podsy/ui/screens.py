@@ -478,7 +478,14 @@ class MainScreen(Screen[None]):
 
         # First, count files to set up progress bar
         files = list(folder.rglob("*"))
-        music_files = [f for f in files if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS]
+        # Filter: must be a file, have supported extension, and not be hidden (start with .)
+        music_files = [
+            f
+            for f in files
+            if f.is_file()
+            and f.suffix.lower() in SUPPORTED_EXTENSIONS
+            and not f.name.startswith(".")
+        ]
         total = len(music_files)
 
         if total == 0:
