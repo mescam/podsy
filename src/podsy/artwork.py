@@ -2,6 +2,9 @@
 
 This module handles extracting artwork from audio files and converting
 them to the iPod's RGB565 format for storage in ArtworkDB.
+
+iPod 5.5g (Video) uses RGB565 Little Endian format with specific
+correlation IDs and dimensions.
 """
 
 import io
@@ -15,17 +18,17 @@ from PIL import Image  # type: ignore[import-untyped]
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-# iPod 5.5g artwork format specifications
-# Format ID -> (width, height, pixel_format, correlation_id)
-# The correlation_id links to the photo database format
-ARTWORK_FORMATS = {
-    1055: (56, 56, "rgb565", 1055),  # List view thumbnail
-    1068: (140, 140, "rgb565", 1068),  # Now Playing small
-    1027: (320, 320, "rgb565", 1027),  # Cover Flow / full screen
+# iPod 5.5g (Video) artwork format specifications
+# Format ID (correlation_id) -> (width, height, image_size)
+# These are the correct values for iPod Video 5G/5.5G
+ARTWORK_FORMATS: dict[int, tuple[int, int, int]] = {
+    1024: (320, 240, 153600),  # Full screen / Now Playing (320x240x2)
+    1055: (200, 200, 80000),   # Large thumbnail (200x200x2) - used in Cover Flow
+    1056: (100, 100, 20000),   # Small thumbnail (100x100x2) - used in lists
 }
 
 # Default formats to generate for each track
-DEFAULT_FORMATS = [1055, 1068, 1027]
+DEFAULT_FORMATS = [1024, 1055, 1056]
 
 
 class ArtworkError(Exception):
@@ -88,11 +91,11 @@ def _extract_m4a_artwork(audio_path: Path) -> bytes | None:
     return None
 
 
-def convert_to_rgb565(image_data: bytes, width: int, height: int) -> bytes:
-    """Convert image data to iPod RGB565 format.
+def convert_to_rgb565_le(image_data: bytes, width: int, height: int) -> bytes:
+    """Convert image data to iPod RGB565 Little Endian format.
 
-    iPod uses RGB565 Little Endian format:
-    - 5 bits red, 6 bits green, 5 bits blue
+    iPod 5.5g uses RGB565 Little Endian (byte-swapped) format:
+    - 5 bits red (bits 15-11), 6 bits green (bits 10-5), 5 bits blue (bits 4-0)
     - Stored as 16-bit little-endian values
 
     Args:
@@ -101,7 +104,7 @@ def convert_to_rgb565(image_data: bytes, width: int, height: int) -> bytes:
         height: Target height
 
     Returns:
-        RGB565 formatted image data
+        RGB565 LE formatted image data
     """
     # Load and resize image
     img = Image.open(io.BytesIO(image_data))
@@ -110,10 +113,11 @@ def convert_to_rgb565(image_data: bytes, width: int, height: int) -> bytes:
     if img.mode != "RGB":
         img = img.convert("RGB")
 
-    # Resize with high quality resampling
-    img = img.resize((width, height), Image.Resampling.LANCZOS)
+    # Resize with high quality resampling, maintaining aspect ratio
+    # and center-cropping to fill the target dimensions
+    img = _resize_and_crop(img, width, height)
 
-    # Convert to RGB565
+    # Convert to RGB565 Little Endian
     output = bytearray(width * height * 2)
 
     pixels = img.load()
@@ -129,11 +133,10 @@ def convert_to_rgb565(image_data: bytes, width: int, height: int) -> bytes:
             g6 = (g >> 2) & 0x3F  # 6 bits
             b5 = (b >> 3) & 0x1F  # 5 bits
 
-            # Pack as RGB565 little-endian
-            # Format: RRRRRGGGGGGBBBBB
+            # Pack as RGB565: RRRRRGGGGGGBBBBB
             rgb565 = (r5 << 11) | (g6 << 5) | b5
 
-            # Store as little-endian
+            # Store as little-endian (low byte first)
             output[idx] = rgb565 & 0xFF
             output[idx + 1] = (rgb565 >> 8) & 0xFF
             idx += 2
@@ -141,66 +144,41 @@ def convert_to_rgb565(image_data: bytes, width: int, height: int) -> bytes:
     return bytes(output)
 
 
-def convert_to_iyuv(image_data: bytes, width: int, height: int) -> bytes:
-    """Convert image data to iPod IYUV format.
+def _resize_and_crop(img: Image.Image, width: int, height: int) -> Image.Image:
+    """Resize image to fill target dimensions, cropping if necessary.
 
-    Some iPod models use IYUV (YUV420 planar) format.
-    This is Y plane, then U plane (quarter size), then V plane (quarter size).
+    This maintains aspect ratio and center-crops to fill the target.
 
     Args:
-        image_data: Raw image data (JPEG, PNG, etc.)
+        img: PIL Image
         width: Target width
         height: Target height
 
     Returns:
-        IYUV formatted image data
+        Resized and cropped image
     """
-    # Load and resize image
-    img = Image.open(io.BytesIO(image_data))
+    src_width, src_height = img.size
+    src_ratio = src_width / src_height
+    dst_ratio = width / height
 
-    # Convert to RGB if necessary
-    if img.mode != "RGB":
-        img = img.convert("RGB")
+    if src_ratio > dst_ratio:
+        # Source is wider - resize by height and crop width
+        new_height = height
+        new_width = int(src_width * height / src_height)
+    else:
+        # Source is taller - resize by width and crop height
+        new_width = width
+        new_height = int(src_height * width / src_width)
 
-    # Resize with high quality resampling
-    img = img.resize((width, height), Image.Resampling.LANCZOS)
+    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-    # Convert to YCbCr
-    img_ycbcr = img.convert("YCbCr")
+    # Center crop
+    left = (new_width - width) // 2
+    top = (new_height - height) // 2
+    right = left + width
+    bottom = top + height
 
-    # Extract planes
-    y_plane = bytearray(width * height)
-    u_plane = bytearray((width // 2) * (height // 2))
-    v_plane = bytearray((width // 2) * (height // 2))
-
-    pixels = img_ycbcr.load()
-
-    # Y plane - full resolution
-    idx = 0
-    for row in range(height):
-        for col in range(width):
-            pixel = cast("Sequence[int]", pixels[col, row])  # type: ignore[index]
-            y_plane[idx] = pixel[0]
-            idx += 1
-
-    # U and V planes - quarter resolution (2x2 averaging)
-    idx = 0
-    for row in range(0, height, 2):
-        for col in range(0, width, 2):
-            # Average 2x2 block
-            cb_sum = 0
-            cr_sum = 0
-            for dy in range(2):
-                for dx in range(2):
-                    pixel = cast("Sequence[int]", pixels[col + dx, row + dy])  # type: ignore[index]
-                    cb_sum += pixel[1]
-                    cr_sum += pixel[2]
-
-            u_plane[idx] = cb_sum // 4
-            v_plane[idx] = cr_sum // 4
-            idx += 1
-
-    return bytes(y_plane) + bytes(u_plane) + bytes(v_plane)
+    return img.crop((left, top, right, bottom))
 
 
 def generate_artwork_formats(
@@ -225,12 +203,8 @@ def generate_artwork_formats(
         if fmt_id not in ARTWORK_FORMATS:
             continue
 
-        width, height, pixel_format, _ = ARTWORK_FORMATS[fmt_id]
-
-        if pixel_format == "rgb565":
-            result[fmt_id] = convert_to_rgb565(image_data, width, height)
-        elif pixel_format == "iyuv":
-            result[fmt_id] = convert_to_iyuv(image_data, width, height)
+        width, height, _ = ARTWORK_FORMATS[fmt_id]
+        result[fmt_id] = convert_to_rgb565_le(image_data, width, height)
 
     return result
 
@@ -247,11 +221,5 @@ def get_artwork_size(format_id: int) -> int:
     if format_id not in ARTWORK_FORMATS:
         return 0
 
-    width, height, pixel_format, _ = ARTWORK_FORMATS[format_id]
-
-    if pixel_format == "rgb565":
-        return width * height * 2
-    elif pixel_format == "iyuv":
-        return width * height + 2 * ((width // 2) * (height // 2))
-
-    return 0
+    _, _, size = ARTWORK_FORMATS[format_id]
+    return size
