@@ -5,6 +5,7 @@ converting between the binary format and Python data models.
 """
 
 import random
+import hashlib
 import struct
 from datetime import datetime
 from io import BytesIO
@@ -14,8 +15,10 @@ from typing import BinaryIO
 from .atoms import (
     MAC_EPOCH_OFFSET,
     MHBD_HEADER_SIZE,
+    MHIA_HEADER_SIZE,
     MHIP_HEADER_SIZE,
     MHIT_HEADER_SIZE_V14,
+    MHLA_HEADER_SIZE,
     MHLP_HEADER_SIZE,
     MHLT_HEADER_SIZE,
     MHOD_HEADER_SIZE,
@@ -207,6 +210,12 @@ def parse_mhit(data: bytes) -> Track:
     gapless_track_flag = struct.unpack("<H", data[256:258])[0] if len(data) > 257 else 0
     gapless_album_flag = struct.unpack("<H", data[258:260])[0] if len(data) > 259 else 0
 
+    # Artwork fields
+    artwork_count = struct.unpack("<H", data[124:126])[0] if len(data) > 125 else 0
+    artwork_size = struct.unpack("<I", data[128:132])[0] if len(data) > 131 else 0
+    has_artwork = (data[164] == 0x01) if len(data) > 164 else False
+    mhii_link = struct.unpack("<I", data[352:356])[0] if len(data) > 355 else 0
+
     # Determine file type
     try:
         # Filetype is stored as reversed 4-byte ASCII
@@ -220,7 +229,6 @@ def parse_mhit(data: bytes) -> Track:
     except ValueError:
         media_type = MediaType.AUDIO
 
-    # Create track with header data
     track = Track(
         id=unique_id,
         title="",
@@ -245,6 +253,10 @@ def parse_mhit(data: bytes) -> Track:
         last_modified=mac_to_datetime(last_modified) if last_modified else datetime.now(),
         compilation=compilation,
         dbid=dbid,
+        has_artwork=has_artwork,
+        artwork_count=artwork_count,
+        artwork_size=artwork_size,
+        mhii_link=mhii_link,
         pregap=pregap,
         postgap=postgap,
         sample_count=sample_count,
@@ -570,13 +582,14 @@ def _build_database(db: Database) -> bytes:
     if db.library_persistent_id == 0:
         db.library_persistent_id = random.randint(1, 2**63 - 1)
 
-    # Build sections
+    # Build sections (album section first — matching iTunes ordering)
+    album_section = _build_album_section(db)
     track_section = _build_track_section(db)
     playlist_section = _build_playlist_section(db)
 
     # Calculate total size
-    num_sections = 2  # tracks + playlists
-    total_size = MHBD_HEADER_SIZE + len(track_section) + len(playlist_section)
+    num_sections = 3  # albums + tracks + playlists
+    total_size = MHBD_HEADER_SIZE + len(album_section) + len(track_section) + len(playlist_section)
 
     # Build MHBD header
     mhbd = BytesIO()
@@ -598,11 +611,113 @@ def _build_database(db: Database) -> bytes:
     mhbd.write(b"\x00" * padding_needed)
 
     output.write(mhbd.getvalue())
-    output.write(track_section)
-    output.write(playlist_section)
+    output.write(album_section)   # MHSD type 4 — album list (iTunes writes this first)
+    output.write(track_section)   # MHSD type 1
+    output.write(playlist_section)  # MHSD type 2
 
     return output.getvalue()
 
+
+
+
+
+def _stable_album_id(album: str, artist: str) -> int:
+    """Stable 64-bit persistent ID derived from album + artist names.
+
+    Using a hash keeps the ID stable across multiple saves, which avoids
+    invalidating ArtworkDB links on re-sync.
+    """
+    key = f"{album}\x00{artist}".encode("utf-8")
+    digest = hashlib.sha1(key).digest()
+    value = int.from_bytes(digest[:8], "little")
+    return value or 1  # ensure non-zero
+
+
+def _build_mhia(album_tracks: list[Track], album_persistent_id: int) -> bytes:
+    """Build a single MHIA (album item) atom.
+
+    Structure (88-byte header):
+      +12 num_mhods         u32   always 3
+      +16 first_track_id    u32   unique_id of the first track in this album
+      +20 album_persist_id  u64   stable 64-bit album ID
+      +28 num_tracks        u32   count of tracks belonging to this album
+      +32 first_track_dbid  u64   dbid of the first track (links artwork chain)
+      +40 padding zeros
+    Followed by 3 sort-key MHODs (types 200=album, 201=artist, 202=album artist).
+    """
+    first = album_tracks[0]
+    album_name = first.album
+    artist_name = first.album_artist or first.artist
+
+    mhods = BytesIO()
+    mhods.write(_build_string_mhod(MhodType.ALBUM_TITLE_SORT, album_name))
+    mhods.write(_build_string_mhod(MhodType.ARTIST_SORT_KEY, artist_name))
+    mhods.write(_build_string_mhod(MhodType.ALBUM_ARTIST_SORT_KEY, artist_name))
+    mhod_data = mhods.getvalue()
+
+    total_length = MHIA_HEADER_SIZE + len(mhod_data)
+
+    mhia = BytesIO()
+    mhia.write(b"mhia")
+    mhia.write(struct.pack("<I", MHIA_HEADER_SIZE))
+    mhia.write(struct.pack("<I", total_length))
+    mhia.write(struct.pack("<I", 3))  # num_mhods
+    mhia.write(struct.pack("<I", first.id))  # first track unique_id
+    mhia.write(struct.pack("<Q", album_persistent_id))
+    mhia.write(struct.pack("<I", len(album_tracks)))  # num_tracks
+    mhia.write(struct.pack("<Q", first.dbid))  # first track dbid
+    padding_needed = MHIA_HEADER_SIZE - mhia.tell()
+    if padding_needed > 0:
+        mhia.write(b"\x00" * padding_needed)
+
+    return mhia.getvalue() + mhod_data
+
+
+def _build_album_section(db: Database) -> bytes:
+    """Build MHSD type 4 (album list) section.
+
+    Groups tracks by (album, album_artist-or-artist) and writes one MHIA per
+    unique album.  Albums are sorted alphabetically so iPod Browse→Albums
+    returns them in order.
+    """
+    # Group tracks by (album_name, artist_name) key
+    albums: dict[tuple[str, str], list[Track]] = {}
+    for track in db.tracks:
+        key = (track.album, track.album_artist or track.artist)
+        if key not in albums:
+            albums[key] = []
+        albums[key].append(track)
+
+    sorted_albums = sorted(albums.items(), key=lambda x: x[0][0].casefold())
+
+    mhias = BytesIO()
+    for (album_name, artist_name), album_tracks in sorted_albums:
+        album_id = _stable_album_id(album_name, artist_name)
+        mhias.write(_build_mhia(album_tracks, album_id))
+
+    mhia_data = mhias.getvalue()
+
+    # MHLA header (album list — same layout as MHLT)
+    mhla = BytesIO()
+    mhla.write(b"mhla")
+    mhla.write(struct.pack("<I", MHLA_HEADER_SIZE))
+    mhla.write(struct.pack("<I", len(sorted_albums)))  # num_albums
+    padding_needed = MHLA_HEADER_SIZE - mhla.tell()
+    mhla.write(b"\x00" * padding_needed)
+
+    mhla_data = mhla.getvalue() + mhia_data
+
+    # MHSD wrapper
+    total_size = MHSD_HEADER_SIZE + len(mhla_data)
+    mhsd = BytesIO()
+    mhsd.write(b"mhsd")
+    mhsd.write(struct.pack("<I", MHSD_HEADER_SIZE))
+    mhsd.write(struct.pack("<I", total_size))
+    mhsd.write(struct.pack("<I", 4))  # type = album list
+    padding_needed = MHSD_HEADER_SIZE - mhsd.tell()
+    mhsd.write(b"\x00" * padding_needed)
+
+    return mhsd.getvalue() + mhla_data
 
 def _build_track_section(db: Database) -> bytes:
     """Build MHSD type 1 (track list) section."""
@@ -736,7 +851,7 @@ def _build_mhit(track: Track) -> bytes:
     mhit.write(struct.pack("<f", float(track.sample_rate)))  # sample_rate_float
     mhit.write(struct.pack("<I", 0))  # date_released
     mhit.write(struct.pack("<H", 0x000C if track.file_type == FileType.MP3 else 0x0033))
-    mhit.write(struct.pack("<H", 0))  # unknown14_2
+    mhit.write(struct.pack("<H", 0 if track.file_type == FileType.MP3 else 0x0100))  # unknown14_2
     mhit.write(struct.pack("<I", 0))  # unknown15
     mhit.write(struct.pack("<I", 0))  # unknown16
     mhit.write(struct.pack("<I", track.skip_count))
@@ -755,7 +870,7 @@ def _build_mhit(track: Track) -> bytes:
     mhit.write(struct.pack("<Q", track.sample_count))
     mhit.write(struct.pack("<I", 0))  # unknown25
     mhit.write(struct.pack("<I", track.postgap))
-    mhit.write(struct.pack("<I", 0))  # unknown27
+    mhit.write(struct.pack("<I", 1))  # unknown27 (always 1 for audio tracks in iTunes)
     mhit.write(struct.pack("<I", track.media_type.value))
     mhit.write(struct.pack("<I", 0))  # season_number
     mhit.write(struct.pack("<I", 0))  # episode_number
@@ -766,6 +881,14 @@ def _build_mhit(track: Track) -> bytes:
     mhit.write(struct.pack("<H", 1 if track.gapless_track_flag else 0))
     mhit.write(struct.pack("<H", 1 if track.gapless_album_flag else 0))
     mhit.write(b"\x00" * 20)  # unknown39 (hash - not checked on 5.5g)
+
+    # mhii_link at offset 352 (0x160) - links to ArtworkImage.id in ArtworkDB
+    # Required for artwork display on iPod 5.5g/Classic/fat nanos
+    current_pos = mhit.tell()
+    mhii_link_offset = 352
+    if current_pos < mhii_link_offset:
+        mhit.write(b"\x00" * (mhii_link_offset - current_pos))
+    mhit.write(struct.pack("<I", track.mhii_link))
 
     # Padding to header size
     padding_needed = MHIT_HEADER_SIZE_V14 - mhit.tell()
@@ -831,10 +954,10 @@ def _build_playlist_section(db: Database) -> bytes:
 
 def _build_mhyp(playlist: Playlist) -> bytes:
     """Build an MHYP atom with its child MHODs and MHIPs."""
-    # Build name MHOD (unless master playlist)
+    # Build name MHOD (for all playlists including master)
     mhods = BytesIO()
     mhod_count = 0
-    if not playlist.is_master and playlist.name:
+    if playlist.name:
         mhods.write(_build_string_mhod(MhodType.TITLE, playlist.name))
         mhod_count += 1
 

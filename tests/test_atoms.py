@@ -5,8 +5,10 @@ import pytest
 from podsy.db.atoms import (
     MAC_EPOCH_OFFSET,
     MHBD_HEADER_SIZE,
+    MHIA_HEADER_SIZE,
     MHIP_HEADER_SIZE,
     MHIT_HEADER_SIZE_V14,
+    MHLA_HEADER_SIZE,
     MHLP_HEADER_SIZE,
     MHLT_HEADER_SIZE,
     MHOD_HEADER_SIZE,
@@ -28,15 +30,17 @@ class TestConstants:
         assert MAC_EPOCH_OFFSET == 2082844800
 
     def test_header_sizes(self) -> None:
-        """Test header size constants."""
-        assert MHBD_HEADER_SIZE == 0x68  # 104 bytes
-        assert MHSD_HEADER_SIZE == 0x60  # 96 bytes
-        assert MHLT_HEADER_SIZE == 0x5C  # 92 bytes
-        assert MHOD_HEADER_SIZE == 0x18  # 24 bytes
-        assert MHLP_HEADER_SIZE == 0x5C  # 92 bytes
-        assert MHYP_HEADER_SIZE == 0x6C  # 108 bytes
-        assert MHIP_HEADER_SIZE == 0x4C  # 76 bytes
-        assert MHIT_HEADER_SIZE_V14 == 0x184  # 388 bytes
+        """Test header size constants match iTunes 7.x on-disk format."""
+        assert MHBD_HEADER_SIZE == 0xF4    # 244 bytes
+        assert MHSD_HEADER_SIZE == 0x60    # 96 bytes
+        assert MHLT_HEADER_SIZE == 0x5C    # 92 bytes
+        assert MHOD_HEADER_SIZE == 0x18    # 24 bytes
+        assert MHLP_HEADER_SIZE == 0x5C    # 92 bytes
+        assert MHYP_HEADER_SIZE == 0x6C    # 108 bytes
+        assert MHIP_HEADER_SIZE == 0x4C    # 76 bytes
+        assert MHIT_HEADER_SIZE_V14 == 0x270  # 624 bytes
+        assert MHLA_HEADER_SIZE == 0x5C    # 92 bytes
+        assert MHIA_HEADER_SIZE == 0x58    # 88 bytes
 
 
 class TestStringEncoding:

@@ -62,6 +62,10 @@ class MhodType(IntEnum):
     SMART_PLAYLIST_RULES = 51
     LIBRARY_PLAYLIST_INDEX = 52
     PLAYLIST_COLUMN = 100
+    # Album section sort-key types (used in MHIA atoms)
+    ALBUM_TITLE_SORT = 200
+    ARTIST_SORT_KEY = 201
+    ALBUM_ARTIST_SORT_KEY = 202
 
 
 class SortOrder(IntEnum):
@@ -118,6 +122,7 @@ class Track:
     has_artwork: bool = False
     artwork_count: int = 0
     artwork_size: int = 0
+    mhii_link: int = 0  # Links to ArtworkImage.id in ArtworkDB
 
     # Gapless playback fields
     pregap: int = 0

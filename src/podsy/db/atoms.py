@@ -28,15 +28,17 @@ from construct import (
 MAC_EPOCH_OFFSET = 2082844800
 
 # Default header sizes for different atom types
-MHBD_HEADER_SIZE = 0x68  # 104 bytes
+MHBD_HEADER_SIZE = 0xF4  # 244 bytes (iTunes 7.x format)
 MHSD_HEADER_SIZE = 0x60  # 96 bytes
 MHLT_HEADER_SIZE = 0x5C  # 92 bytes
 MHIT_HEADER_SIZE_V13 = 0x148  # 328 bytes (db version 0x12-0x13)
-MHIT_HEADER_SIZE_V14 = 0x184  # 388 bytes (db version 0x14+)
+MHIT_HEADER_SIZE_V14 = 0x270  # 624 bytes (iTunes 7.x format)
 MHOD_HEADER_SIZE = 0x18  # 24 bytes
 MHLP_HEADER_SIZE = 0x5C  # 92 bytes
 MHYP_HEADER_SIZE = 0x6C  # 108 bytes
 MHIP_HEADER_SIZE = 0x4C  # 76 bytes
+MHLA_HEADER_SIZE = 0x5C  # 92 bytes  # album list — same layout as MHLT
+MHIA_HEADER_SIZE = 0x58  # 88 bytes  # album item
 
 # =============================================================================
 # MHOD (Data Object) - Variable-length metadata
