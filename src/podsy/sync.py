@@ -490,7 +490,6 @@ def sync_folder(
     folder: Path,
     *,
     recursive: bool = True,
-    create_playlist: bool = False,
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> list[Track]:
     """Sync all music files from a folder to the iPod.
@@ -500,14 +499,11 @@ def sync_folder(
         db: Database to update
         folder: Source folder path
         recursive: Whether to process subfolders
-        create_playlist: Whether to create a playlist with the folder name
         progress_callback: Optional callback(current, total, filename) for progress
 
     Returns:
         List of successfully synced Track objects
     """
-    from .playlists import DuplicatePlaylistError
-    from .playlists import create_playlist as make_playlist
 
     synced: list[Track] = []
     errors: list[tuple[Path, str]] = []
@@ -534,23 +530,6 @@ def sync_folder(
         except Exception as e:
             errors.append((file, f"Unexpected error: {e}"))
 
-    # Create playlist if requested and we synced some tracks
-    if create_playlist and synced:
-        playlist_name = folder.name
-        # Find a unique name if needed
-        base_name = playlist_name
-        counter = 1
-        while db.get_playlist_by_name(playlist_name) is not None:
-            counter += 1
-            playlist_name = f"{base_name} ({counter})"
-
-        try:
-            playlist = make_playlist(db, playlist_name)
-            for track in synced:
-                playlist.track_ids.append(track.id)
-        except DuplicatePlaylistError:
-            # Should not happen due to check above, but handle gracefully
-            pass
 
     return synced
 
