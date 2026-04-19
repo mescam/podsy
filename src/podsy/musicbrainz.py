@@ -12,6 +12,7 @@ Example:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
@@ -23,6 +24,9 @@ from typing import Final
 __all__ = [
     "MusicBrainzError",
     "search_release",
+    "search_recording",
+    "fetch_track_metadata",
+    "lookup_release",
     "download_cover_art",
     "fetch_cover_art",
 ]
@@ -31,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 USER_AGENT: Final = "Podsy/0.1.0 (https://github.com/mescam/podsy)"
 MUSICBRAINZ_API_BASE: Final = "https://musicbrainz.org/ws/2/release/"
+MUSICBRAINZ_RECORDING_BASE: Final = "https://musicbrainz.org/ws/2/recording/"
 COVER_ART_ARCHIVE_BASE: Final = "https://coverartarchive.org/release/"
 RATE_LIMIT_SECONDS: Final = 1.0
 
@@ -178,11 +183,249 @@ def download_cover_art(mbid: str, *, timeout: int = 10) -> bytes | None:
         return None
 
 
-def fetch_cover_art(artist: str, album: str, *, timeout: int = 10) -> bytes | None:
-    """Convenience function to search for a release and download its cover art.
+def search_recording(
+    artist: str, title: str, *, timeout: int = 10
+) -> dict[str, str | int] | None:
+    """Search MusicBrainz for a recording by artist and title.
 
-    This function combines search_release() and download_cover_art() with proper
-    rate limiting between the two API calls.
+    Returns a dict with corrected metadata fields from the best match, or None
+    if no match is found. Returned fields may include: title, artist, album,
+    album_artist, track_number, total_tracks, disc_number, total_discs, year.
+    """
+    query = f"artist:{artist} AND recording:{title}"
+    encoded_query = urllib.parse.quote_plus(query)
+    url = (
+        f"{MUSICBRAINZ_RECORDING_BASE}"
+        f"?query={encoded_query}&fmt=json&limit=10"
+        f"&inc=releases+media+artist-credits"
+    )
+
+    logger.debug("Searching MusicBrainz recording for artist=%s, title=%s", artist, title)
+    response_bytes = _make_request(url, timeout=timeout)
+    if response_bytes is None:
+        return None
+
+    try:
+        data = json.loads(response_bytes.decode("utf-8"))
+        recordings = data.get("recordings", [])
+        if not recordings:
+            logger.debug("No recordings found for artist=%s, title=%s", artist, title)
+            return None
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error("Failed to parse recording search response: %s", e)
+        return None
+
+    best: dict[str, str | int] = {}
+    best_score = -1
+
+    for rec in recordings:
+        score = 0
+        metadata: dict[str, str | int] = {}
+
+        mb_score = rec.get("score", 0)
+        if mb_score < 50:
+            continue
+
+        rec_title = rec.get("title", "")
+        if rec_title:
+            metadata["title"] = rec_title
+            if rec_title.lower() == title.lower():
+                score += 10
+            elif title.lower() in rec_title.lower() or rec_title.lower() in title.lower():
+                score += 5
+
+        artist_credits = rec.get("artist-credit", [])
+        if artist_credits:
+            artist_name = (
+                artist_credits[0].get("name", "")
+                or artist_credits[0].get("artist", {}).get("name", "")
+            )
+            if artist_name:
+                metadata["artist"] = artist_name
+                if artist_name.lower() == artist.lower():
+                    score += 10
+                elif artist.lower() in artist_name.lower():
+                    score += 5
+            if len(artist_credits) == 1:
+                metadata["album_artist"] = artist_name
+
+        releases = rec.get("releases", [])
+        release = _pick_best_release(releases)
+        if release:
+            release_title = release.get("title", "")
+            if release_title:
+                metadata["album"] = release_title
+
+            release_date = release.get("date", "")
+            if release_date:
+                with contextlib.suppress(ValueError):
+                    metadata["year"] = int(release_date[:4])
+
+            media = release.get("media", [])
+            if media:
+                medium = media[0]
+                track_count = medium.get("track-count", 0)
+                if track_count:
+                    metadata["total_tracks"] = track_count
+
+                metadata["disc_number"] = medium.get("position", 1)
+
+                track_number = _find_track_position(medium.get("track", []), rec)
+                if track_number:
+                    metadata["track_number"] = track_number
+
+        score += mb_score // 10
+
+        if score > best_score:
+            best_score = score
+            best = metadata
+
+    if best_score <= 0:
+        logger.debug("No confident match for artist=%s, title=%s", artist, title)
+        return None
+
+    logger.debug("Best recording match for %s - %s: score=%d", artist, title, best_score)
+    return best if best else None
+
+
+def _pick_best_release(releases: list[dict]) -> dict | None:
+    """Prefer official album releases over bootlegs/soundtracks."""
+    if not releases:
+        return None
+
+    official = [
+        r for r in releases
+        if r.get("status") in ("Official", None)
+        and r.get("release-group", {}).get("primary-type") == "Album"
+    ]
+    if official:
+        return official[0]
+
+    any_official = [r for r in releases if r.get("status") == "Official"]
+    if any_official:
+        return any_official[0]
+
+    return releases[0]
+
+
+def _find_track_position(tracks: list[dict], recording: dict) -> int | None:
+    """Find track number for a recording within a medium's track list."""
+    rec_title = (recording.get("title") or "").lower()
+    rec_id = recording.get("id", "")
+
+    for track in tracks:
+        if track.get("id") == rec_id:
+            pos = track.get("position")
+            if pos:
+                return pos
+            num = track.get("number")
+            if num:
+                with contextlib.suppress(ValueError):
+                    return int(num)
+        if rec_title and track.get("title", "").lower() == rec_title:
+            pos = track.get("position")
+            if pos:
+                return pos
+            num = track.get("number")
+            if num:
+                with contextlib.suppress(ValueError):
+                    return int(num)
+    return None
+
+
+def fetch_track_metadata(
+    artist: str, title: str, *, album: str = "", timeout: int = 10
+) -> dict[str, str | int] | None:
+    """Look up corrected track metadata from MusicBrainz.
+
+    Uses a two-step approach:
+    1. Search for the recording by artist + title.
+    2. If album is provided, also search for the release and match.
+
+    Args:
+        artist: Current artist name (may be incorrect).
+        title: Current track title (may be incorrect).
+        album: Current album name (optional, improves accuracy).
+        timeout: Request timeout in seconds.
+
+    Returns:
+        Dict with corrected metadata fields, or None if not found.
+    """
+    logger.info("Fetching track metadata for %s - %s (album: %s)", artist, title, album or "N/A")
+    result = search_recording(artist, title, timeout=timeout)
+    if result is None:
+        logger.debug("No recording match for %s - %s", artist, title)
+        return None
+
+    if album:
+        mbid = search_release(artist, album, timeout=timeout)
+        if mbid:
+            result["album"] = album
+            release_info = _lookup_release(mbid, timeout=timeout)
+            if release_info:
+                release_date = release_info.get("date", "")
+                if release_date:
+                    with contextlib.suppress(ValueError):
+                        result["year"] = int(release_date[:4])
+                media = release_info.get("media", [])
+                if media:
+                    medium = media[0]
+                    track_count = medium.get("track-count", 0)
+                    if track_count:
+                        result["total_tracks"] = track_count
+                    track_number = _find_track_in_release(
+                        medium.get("track", []), title
+                    )
+                    if track_number:
+                        result["track_number"] = track_number
+
+    if result:
+        logger.info("Retagged %s - %s: %s", artist, title, result)
+    return result
+
+
+def _lookup_release(mbid: str, *, timeout: int = 10) -> dict | None:
+    """Look up a release by MBID to get full details including date and tracklist."""
+    url = f"{MUSICBRAINZ_API_BASE}{mbid}?inc=media&fmt=json"
+    response_bytes = _make_request(url, timeout=timeout)
+    if response_bytes is None:
+        return None
+
+    try:
+        return json.loads(response_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error("Failed to parse release lookup response: %s", e)
+        return None
+
+
+def _find_track_in_release(tracks: list[dict], title: str) -> int | None:
+    """Find track number by title match within a release's track list."""
+    title_lower = title.lower()
+    for track in tracks:
+        if track.get("title", "").lower() == title_lower:
+            pos = track.get("position")
+            if pos:
+                return pos
+            num = track.get("number")
+            if num:
+                with contextlib.suppress(ValueError):
+                    return int(num)
+    for track in tracks:
+        if title_lower in track.get("title", "").lower():
+            pos = track.get("position")
+            if pos:
+                return pos
+            num = track.get("number")
+            if num:
+                with contextlib.suppress(ValueError):
+                    return int(num)
+    return None
+
+
+def fetch_cover_art(artist: str, album: str, *, timeout: int = 10) -> bytes | None:
+    """Search for a release and download its cover art.
+
+    Combines search_release() and download_cover_art() with rate limiting.
 
     Args:
         artist: The artist name to search for.

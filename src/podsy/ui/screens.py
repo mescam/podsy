@@ -34,7 +34,7 @@ from ..playlists import (
     add_track_to_playlist,
     create_playlist,
 )
-from ..sync import SyncError, remove_track, sync_file
+from ..sync import SyncError, remove_track, retag_track, sync_file
 
 if TYPE_CHECKING:
     pass
@@ -138,6 +138,7 @@ class MainScreen(Screen[None]):
         Binding("D", "delete_library", "Delete Library", show=True),
         Binding("p", "new_playlist", "New Playlist", show=True),
         Binding("a", "add_to_playlist", "Add to Playlist", show=True),
+        Binding("t", "retag_selected", "Retag", show=True),
         Binding("f", "focus_filter", "Filter", show=True),
         Binding("l", "change_local_path", "Change Local Path", show=True),
         Binding("escape", "cancel", "Cancel", show=False),
@@ -798,7 +799,78 @@ class MainScreen(Screen[None]):
             except PlaylistError as e:
                 self.notify(f"Failed: {e}", severity="error")
 
-    @on(ListView.Selected, "#playlist-list")
+    def action_retag_selected(self) -> None:
+        """Retag selected track(s) via MusicBrainz lookup."""
+        track_ids, description = self._get_selected_node_tracks()
+        if not track_ids:
+            self.notify("No track selected", severity="warning")
+            return
+
+        self.app.push_screen(
+            ConfirmRetagScreen(len(track_ids), description),
+            lambda confirmed: self._on_retag_confirmed(confirmed, track_ids),
+        )
+
+    def _on_retag_confirmed(self, confirmed: bool, track_ids: list[int]) -> None:
+        """Handle retag confirmation."""
+        if not confirmed:
+            return
+
+        progress_container = self.query_one("#progress-container")
+        progress_container.display = True
+        progress_bar = self.query_one("#sync-progress", ProgressBar)
+        progress_label = self.query_one("#progress-label", Label)
+
+        progress_bar.update(total=len(track_ids), progress=0)
+        progress_label.update("Looking up tracks on MusicBrainz...")
+
+        self._retag_worker = self.run_worker(
+            lambda: self._retag_worker_fn(track_ids),
+            name="retag",
+            exclusive=True,
+            thread=True,
+        )
+
+    def _retag_worker_fn(self, track_ids: list[int]) -> list[tuple[int, bool]]:
+        """Worker to retag tracks via MusicBrainz in background thread."""
+        results: list[tuple[int, bool]] = []
+        total = len(track_ids)
+
+        for i, track_id in enumerate(track_ids, 1):
+            track = self.database.get_track_by_id(track_id)
+            if track is None:
+                results.append((track_id, False))
+                continue
+
+            self.app.call_from_thread(
+                self._update_progress, i, total, f"{track.artist} - {track.title}"
+            )
+
+            try:
+                updated = retag_track(track)
+                results.append((track_id, updated))
+            except Exception:
+                results.append((track_id, False))
+
+        self.app.call_from_thread(self._on_retag_complete, results)
+        return results
+
+    def _on_retag_complete(self, results: list[tuple[int, bool]]) -> None:
+        """Handle retag completion."""
+        progress_container = self.query_one("#progress-container")
+        progress_container.display = False
+
+        save(self.database, self.device.db_path)
+        self._load_library_tree()
+
+        updated_count = sum(1 for _, updated in results if updated)
+        total_count = len(results)
+        not_found_count = total_count - updated_count
+
+        msg = f"Retagged {updated_count}/{total_count} tracks"
+        if not_found_count:
+            msg += f" ({not_found_count} not found on MusicBrainz)"
+        self.notify(msg, severity="information")
     def on_playlist_selected(self, event: ListView.Selected) -> None:
         """Handle playlist selection."""
         item_id = event.item.id or ""
@@ -1135,4 +1207,52 @@ class ConfirmFlacConversionScreen(Screen[bool]):
 
     def action_confirm(self) -> None:
         """Confirm conversion."""
+        self.dismiss(True)
+
+
+class ConfirmRetagScreen(Screen[bool]):
+    """Modal screen to confirm retagging tracks via MusicBrainz."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=True),
+        Binding("enter", "confirm", "Retag", show=True),
+    ]
+
+    def __init__(self, track_count: int, description: str = "") -> None:
+        super().__init__()
+        self.track_count = track_count
+        self.description = description
+
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Label("Retag from MusicBrainz", id="dialog-title"),
+            Static(
+                f"Look up corrected metadata for {self.description}?\n\n"
+                "This will search MusicBrainz for each track and update\n"
+                "title, artist, album, and other tag fields.",
+                id="confirm-message",
+            ),
+            Horizontal(
+                Button("Cancel", id="cancel-btn", variant="default"),
+                Button("Retag", id="retag-btn", variant="primary"),
+                id="dialog-buttons",
+            ),
+            id="dialog-container",
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#retag-btn", Button).focus()
+
+    @on(Button.Pressed, "#cancel-btn")
+    def on_cancel_pressed(self) -> None:
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#retag-btn")
+    def on_retag_pressed(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def action_confirm(self) -> None:
         self.dismiss(True)

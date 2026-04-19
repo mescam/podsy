@@ -6,7 +6,9 @@ them in the iTunesDB.
 
 import contextlib
 import hashlib
+import logging
 import random
+import re
 import shutil
 import string
 from collections.abc import Callable
@@ -16,6 +18,7 @@ from typing import Protocol
 
 from mutagen import File as MutagenFile  # type: ignore[attr-defined]
 from mutagen.easyid3 import EasyID3
+from mutagen.flac import FLAC
 from mutagen.id3 import ID3
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
@@ -25,7 +28,10 @@ from .db.artworkdb import ArtworkDB, add_artwork_to_db
 from .db.models import Database, FileType, MediaType, Track
 from .device import IPodDevice, ensure_music_folders
 from .musicbrainz import fetch_cover_art as fetch_mb_cover_art
+from .musicbrainz import fetch_track_metadata
 from .transcoder import TranscodingError, is_flac, transcode_flac_to_aac
+
+logger = logging.getLogger(__name__)
 
 
 class SyncError(Exception):
@@ -117,7 +123,7 @@ def read_metadata(path: Path) -> dict[str, str | int]:
         Dictionary with metadata fields
     """
     metadata: dict[str, str | int] = {
-        "title": path.stem,
+        "title": "",
         "artist": "",
         "album": "",
         "album_artist": "",
@@ -166,6 +172,10 @@ def read_metadata(path: Path) -> dict[str, str | int]:
         elif isinstance(audio, MP4):
             _extract_mp4_tags(audio, metadata)
 
+        # Handle FLAC files (Vorbis comments)
+        elif isinstance(audio, FLAC):
+            _extract_vorbis_tags(audio, metadata)
+
         # Generic mutagen handling
         elif hasattr(audio, "tags") and audio.tags:
             _extract_generic_tags(audio.tags, metadata)
@@ -173,6 +183,9 @@ def read_metadata(path: Path) -> dict[str, str | int]:
     except Exception:
         # If all else fails, just use filename
         pass
+
+    if not metadata["title"]:
+        metadata["title"] = path.stem
 
     return metadata
 
@@ -276,6 +289,61 @@ def _extract_mp4_tags(audio: MP4, metadata: dict[str, str | int]) -> None:
                 metadata["total_discs"] = disc_info[1]
 
 
+def _extract_vorbis_tags(audio: FLAC, metadata: dict[str, str | int]) -> None:
+    """Extract metadata from FLAC Vorbis comments."""
+    tags = audio.tags
+    if tags is None:
+        return
+
+    VORBIS_MAP: dict[str, str] = {
+        "title": "title",
+        "artist": "artist",
+        "album": "album",
+        "albumartist": "album_artist",
+        "genre": "genre",
+        "composer": "composer",
+        "comment": "comment",
+        "date": "year",
+    }
+
+    for vorbis_key, meta_key in VORBIS_MAP.items():
+        if vorbis_key in tags and tags[vorbis_key]:
+            val = tags[vorbis_key][0]
+            if meta_key == "year":
+                with contextlib.suppress(ValueError, IndexError):
+                    metadata["year"] = int(val[:4])
+            else:
+                metadata[meta_key] = val
+
+    if "tracknumber" in tags and tags["tracknumber"]:
+        tn = tags["tracknumber"][0]
+        if "/" in tn:
+            num, total = tn.split("/", 1)
+            metadata["track_number"] = int(num)
+            metadata["total_tracks"] = int(total)
+        else:
+            with contextlib.suppress(ValueError):
+                metadata["track_number"] = int(tn)
+
+    if "tracktotal" in tags and tags["tracktotal"]:
+        with contextlib.suppress(ValueError):
+            metadata["total_tracks"] = int(tags["tracktotal"][0])
+
+    if "discnumber" in tags and tags["discnumber"]:
+        dn = tags["discnumber"][0]
+        if "/" in dn:
+            num, total = dn.split("/", 1)
+            metadata["disc_number"] = int(num)
+            metadata["total_discs"] = int(total)
+        else:
+            with contextlib.suppress(ValueError):
+                metadata["disc_number"] = int(dn)
+
+    if "disctotal" in tags and tags["disctotal"]:
+        with contextlib.suppress(ValueError):
+            metadata["total_discs"] = int(tags["disctotal"][0])
+
+
 def _extract_generic_tags(
     tags: dict[str, list[str]] | object, metadata: dict[str, str | int]
 ) -> None:
@@ -290,7 +358,7 @@ def _extract_generic_tags(
         key_lower = key.lower()
         val = str(value[0]) if isinstance(value, list) and value else str(value)
 
-        if "title" in key_lower and not metadata.get("title"):
+        if "title" in key_lower and "album" not in key_lower:
             metadata["title"] = val
         elif "artist" in key_lower and "album" not in key_lower:
             metadata["artist"] = val
@@ -491,6 +559,72 @@ def remove_track(device: IPodDevice, db: Database, track: Track) -> None:
     # Remove from all playlists
     for playlist in db.playlists:
         playlist.track_ids = [tid for tid in playlist.track_ids if tid != track.id]
+
+
+def retag_track(track: Track) -> bool:
+    """Retag a track by looking up corrected metadata from MusicBrainz.
+
+    Uses the track's current (possibly incorrect) metadata to search MusicBrainz
+    and updates the track in-place with corrected fields.
+
+    Args:
+        track: The Track object to retag.
+
+    Returns:
+        True if metadata was updated, False if no match found.
+    """
+    artist = track.artist or ""
+    title = track.title or ""
+    album = track.album or ""
+
+    if not title and not artist:
+        logger.warning("Cannot retag track %d: no title or artist", track.id)
+        return False
+
+    # Strip leading track numbers like "07 - " or "07. " from titles
+    # that came from filenames when tags weren't read correctly
+    clean_title = re.sub(r"^\d{1,3}\s*[.\-\s]\s*", "", title)
+    if clean_title and clean_title != title:
+        logger.info("Stripped track number from title: %r -> %r", title, clean_title)
+        title = clean_title
+
+    result = fetch_track_metadata(artist, title, album=album)
+    if result is None:
+        logger.info("No MusicBrainz match for track %d: %s - %s", track.id, artist, title)
+        return False
+
+    updated = False
+    if "title" in result and result["title"]:
+        track.title = str(result["title"])
+        updated = True
+    if "artist" in result and result["artist"]:
+        track.artist = str(result["artist"])
+        updated = True
+    if "album" in result and result["album"]:
+        track.album = str(result["album"])
+        updated = True
+    if "album_artist" in result and result["album_artist"]:
+        track.album_artist = str(result["album_artist"])
+        updated = True
+    if "genre" in result and result["genre"]:
+        track.genre = str(result["genre"])
+        updated = True
+    if "track_number" in result and result["track_number"]:
+        track.track_number = int(result["track_number"])
+        updated = True
+    if "total_tracks" in result and result["total_tracks"]:
+        track.total_tracks = int(result["total_tracks"])
+        updated = True
+    if "disc_number" in result and result["disc_number"]:
+        track.disc_number = int(result["disc_number"])
+        updated = True
+    if "year" in result and result["year"]:
+        track.year = int(result["year"])
+        updated = True
+
+    if updated:
+        logger.info("Retagged track %d: %s - %s", track.id, track.artist, track.title)
+    return updated
 
 
 class SyncProgressCallback(Protocol):
