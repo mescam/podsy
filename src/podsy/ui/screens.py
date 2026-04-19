@@ -175,7 +175,12 @@ class MainScreen(Screen[None]):
         # Track active sync worker
         self._sync_worker: Worker[list] | None = None
         # Artwork database for album art
+        from ..db.artworkdb import ArtworkDB
         self._artwork_db = ArtworkDB()
+        self._artwork_dirty = False
+
+    def _mark_artwork_dirty(self) -> None:
+        self._artwork_dirty = True
         # FLAC conversion preference
         self._convert_flac: bool = True
 
@@ -451,8 +456,12 @@ class MainScreen(Screen[None]):
                     track = sync_file(
                         self.device, self.database, path, artwork_db=self._artwork_db
                     )
+                    if track.has_artwork:
+                        self._artwork_dirty = True
                     save(self.database, self.device.db_path)
-                    save_artworkdb(self._artwork_db, self.device.artwork_dir)
+                    if self._artwork_dirty:
+                        save_artworkdb(self._artwork_db, self.device.artwork_dir)
+                        self._artwork_dirty = False
                     self._load_library_tree()
                     self.notify(f"Converted & synced: {track.title}", severity="information")
                 except TranscodingError as e:
@@ -466,8 +475,12 @@ class MainScreen(Screen[None]):
                     track = sync_file(
                         self.device, self.database, path, artwork_db=self._artwork_db
                     )
+                    if track.has_artwork:
+                        self._artwork_dirty = True
                     save(self.database, self.device.db_path)
-                    save_artworkdb(self._artwork_db, self.device.artwork_dir)
+                    if self._artwork_dirty:
+                        save_artworkdb(self._artwork_db, self.device.artwork_dir)
+                        self._artwork_dirty = False
                     self._load_library_tree()
                     self.notify(f"Synced: {track.title}", severity="information")
                 except SyncError as e:
@@ -572,6 +585,8 @@ class MainScreen(Screen[None]):
                     check_duplicate=True,
                     artwork_db=self._artwork_db,
                 )
+                if track.has_artwork:
+                    self._artwork_dirty = True
                 synced.append(track)
             except SyncError as e:
                 errors.append((file, str(e)))
@@ -621,7 +636,9 @@ class MainScreen(Screen[None]):
 
         # Save databases
         save(self.database, self.device.db_path)
-        save_artworkdb(self._artwork_db, self.device.artwork_dir)
+        if self._artwork_dirty:
+            save_artworkdb(self._artwork_db, self.device.artwork_dir)
+            self._artwork_dirty = False
 
         # Refresh UI
         self._load_library_tree()
