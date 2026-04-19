@@ -139,9 +139,10 @@ class TestSupportedExtensions:
         assert ".aac" in SUPPORTED_EXTENSIONS
         assert SUPPORTED_EXTENSIONS[".aac"] == FileType.AAC
 
-    def test_flac_not_supported(self) -> None:
-        """Test that FLAC is not supported."""
-        assert ".flac" not in SUPPORTED_EXTENSIONS
+    def test_flac_supported_with_transcoding(self) -> None:
+        """Test that FLAC is supported (transcoded to M4A)."""
+        assert ".flac" in SUPPORTED_EXTENSIONS
+        assert SUPPORTED_EXTENSIONS[".flac"] == FileType.M4A
 
     def test_wav_not_supported(self) -> None:
         """Test that WAV is not in supported (iPod 5.5g doesn't support WAV well)."""
@@ -328,7 +329,7 @@ class TestSyncFileErrors:
         """Test syncing unsupported file format."""
         with tempfile.TemporaryDirectory() as tmpdir:
             mount = Path(tmpdir)
-            source = Path(tmpdir) / "test.flac"
+            source = Path(tmpdir) / "test.ogg"
             source.touch()
 
             device = IPodDevice(

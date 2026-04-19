@@ -4,8 +4,8 @@ This module provides functions to load and save iTunesDB files,
 converting between the binary format and Python data models.
 """
 
-import random
 import hashlib
+import random
 import struct
 from datetime import datetime
 from io import BytesIO
@@ -627,7 +627,7 @@ def _stable_album_id(album: str, artist: str) -> int:
     Using a hash keeps the ID stable across multiple saves, which avoids
     invalidating ArtworkDB links on re-sync.
     """
-    key = f"{album}\x00{artist}".encode("utf-8")
+    key = f"{album}\x00{artist}".encode()
     digest = hashlib.sha1(key).digest()
     value = int.from_bytes(digest[:8], "little")
     return value or 1  # ensure non-zero

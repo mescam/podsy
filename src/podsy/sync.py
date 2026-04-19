@@ -20,10 +20,12 @@ from mutagen.id3 import ID3
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
 
-from .artwork import extract_artwork, generate_artwork_formats, get_artwork_size
+from .artwork import generate_artwork_formats, get_artwork_size, resolve_artwork
 from .db.artworkdb import ArtworkDB, add_artwork_to_db
 from .db.models import Database, FileType, MediaType, Track
 from .device import IPodDevice, ensure_music_folders
+from .musicbrainz import fetch_cover_art as fetch_mb_cover_art
+from .transcoder import TranscodingError, is_flac, transcode_flac_to_aac
 
 
 class SyncError(Exception):
@@ -41,6 +43,7 @@ SUPPORTED_EXTENSIONS: dict[str, FileType] = {
     ".m4p": FileType.M4P,
     ".aac": FileType.AAC,
     ".mp4": FileType.M4A,  # Audio-only MP4
+    ".flac": FileType.M4A,  # FLAC files are transcoded to M4A
 }
 
 
@@ -326,111 +329,139 @@ def sync_file(
 
     file_type = SUPPORTED_EXTENSIONS[ext]
 
-    # Read metadata
-    metadata = read_metadata(source)
+    # Handle FLAC transcoding
+    _temp_file_to_cleanup: Path | None = None
+    source_for_sync = source
+    if is_flac(source):
+        try:
+            temp_m4a = transcode_flac_to_aac(source)
+            source_for_sync = temp_m4a
+            _temp_file_to_cleanup = temp_m4a
+            ext = ".m4a"
+            file_type = FileType.M4A
+        except TranscodingError as e:
+            raise SyncError(f"Failed to transcode FLAC file: {e}") from e
 
-    # Check for duplicates
-    if check_duplicate:
-        for existing in db.tracks:
-            if (
-                existing.title == metadata["title"]
-                and existing.artist == metadata["artist"]
-                and existing.album == metadata["album"]
-            ):
-                raise SyncError(f"Track already exists: {metadata['artist']} - {metadata['title']}")
+    try:
+        # Read metadata from original file (FLAC Vorbis comments, not transcoded M4A)
+        metadata = read_metadata(source)
 
-    # Select destination folder and generate filename
-    dest_folder = select_music_folder(device)
-    dest_filename = generate_filename(ext)
-    dest_path = dest_folder / dest_filename
+        # Check for duplicates
+        if check_duplicate:
+            for existing in db.tracks:
+                if (
+                    existing.title == metadata["title"]
+                    and existing.artist == metadata["artist"]
+                    and existing.album == metadata["album"]
+                ):
+                    raise SyncError(
+                        f"Track already exists: {metadata['artist']} - {metadata['title']}"
+                    )
 
-    # Ensure unique filename
-    while dest_path.exists():
+        # Select destination folder and generate filename
+        dest_folder = select_music_folder(device)
         dest_filename = generate_filename(ext)
         dest_path = dest_folder / dest_filename
 
-    # Copy file
-    try:
-        shutil.copy2(source, dest_path)
-    except OSError as e:
-        raise SyncError(f"Failed to copy file: {e}") from e
+        # Ensure unique filename
+        while dest_path.exists():
+            dest_filename = generate_filename(ext)
+            dest_path = dest_folder / dest_filename
 
-    # Create iPod path format (relative to mount point with colons)
-    folder_name = dest_folder.name
-    ipod_path = f":iPod_Control:Music:{folder_name}:{dest_filename}"
-
-    # Calculate sample_count for gapless playback (required for iPod to not skip tracks)
-    duration_ms = int(metadata.get("duration_ms", 0))
-    sample_rate = int(metadata.get("sample_rate", 44100))
-    sample_count = int((duration_ms / 1000.0) * sample_rate)
-
-    # Generate unique dbid for artwork linking
-    dbid = random.randint(1, 2**63 - 1)
-
-    # Extract and process artwork
-    has_artwork = False
-    artwork_count = 0
-    artwork_size = 0
-
-    raw_artwork = extract_artwork(source)
-    if raw_artwork and artwork_db is not None:
+        # Copy file
         try:
-            artwork_formats = generate_artwork_formats(raw_artwork)
-            if artwork_formats:
-                add_artwork_to_db(
-                    artwork_db,
-                    device.artwork_dir,
-                    dbid,
-                    artwork_formats,
-                )
-                has_artwork = True
-                artwork_count = len(artwork_formats)
-                # Calculate total artwork size
-                for fmt_id in artwork_formats:
-                    artwork_size += get_artwork_size(fmt_id)
-        except Exception:
-            # Artwork extraction failed, continue without artwork
-            pass
+            shutil.copy2(source_for_sync, dest_path)
+        except OSError as e:
+            raise SyncError(f"Failed to copy file: {e}") from e
 
-    # Create track
-    track = Track(
-        id=db.next_track_id(),
-        title=str(metadata["title"]),
-        artist=str(metadata["artist"]),
-        album=str(metadata["album"]),
-        album_artist=str(metadata.get("album_artist", "")),
-        genre=str(metadata.get("genre", "")),
-        composer=str(metadata.get("composer", "")),
-        comment=str(metadata.get("comment", "")),
-        path=ipod_path,
-        duration_ms=duration_ms,
-        bitrate=int(metadata.get("bitrate", 0)),
-        sample_rate=sample_rate,
-        size_bytes=dest_path.stat().st_size,
-        track_number=int(metadata.get("track_number", 0)),
-        total_tracks=int(metadata.get("total_tracks", 0)),
-        disc_number=int(metadata.get("disc_number", 1)),
-        total_discs=int(metadata.get("total_discs", 1)),
-        year=int(metadata.get("year", 0)),
-        file_type=file_type,
-        media_type=MediaType.AUDIO,
-        date_added=datetime.now(),
-        sample_count=sample_count,
-        dbid=dbid,
-        has_artwork=has_artwork,
-        artwork_count=artwork_count,
-        artwork_size=artwork_size,
-    )
+        # Create iPod path format (relative to mount point with colons)
+        folder_name = dest_folder.name
+        ipod_path = f":iPod_Control:Music:{folder_name}:{dest_filename}"
 
-    # Add to database
-    db.tracks.append(track)
+        # Calculate sample_count for gapless playback (required for iPod to not skip tracks)
+        duration_ms = int(metadata.get("duration_ms", 0))
+        sample_rate = int(metadata.get("sample_rate", 44100))
+        if is_flac(source):
+            sample_rate = 44100  # Transcoded M4A is always 44100 Hz
+        sample_count = int((duration_ms / 1000.0) * sample_rate)
 
-    # Add to master playlist
-    master = db.get_master_playlist()
-    if master:
-        master.track_ids.append(track.id)
+        # Generate unique dbid for artwork linking
+        dbid = random.randint(1, 2**63 - 1)
 
-    return track
+        # Extract and process artwork
+        has_artwork = False
+        artwork_count = 0
+        artwork_size = 0
+
+        raw_artwork = resolve_artwork(source)
+        if raw_artwork is None:
+            metadata_for_art = read_metadata(source)
+            artist = str(metadata_for_art.get("artist", ""))
+            album = str(metadata_for_art.get("album", ""))
+            if artist and album:
+                raw_artwork = fetch_mb_cover_art(artist, album)
+        if raw_artwork and artwork_db is not None:
+            try:
+                artwork_formats = generate_artwork_formats(raw_artwork)
+                if artwork_formats:
+                    add_artwork_to_db(
+                        artwork_db,
+                        device.artwork_dir,
+                        dbid,
+                        artwork_formats,
+                    )
+                    has_artwork = True
+                    artwork_count = len(artwork_formats)
+                    # Calculate total artwork size
+                    for fmt_id in artwork_formats:
+                        artwork_size += get_artwork_size(fmt_id)
+            except Exception:
+                # Artwork extraction failed, continue without artwork
+                pass
+
+        # Create track
+        track = Track(
+            id=db.next_track_id(),
+            title=str(metadata["title"]),
+            artist=str(metadata["artist"]),
+            album=str(metadata["album"]),
+            album_artist=str(metadata.get("album_artist", "")),
+            genre=str(metadata.get("genre", "")),
+            composer=str(metadata.get("composer", "")),
+            comment=str(metadata.get("comment", "")),
+            path=ipod_path,
+            duration_ms=duration_ms,
+            bitrate=int(metadata.get("bitrate", 0)),
+            sample_rate=sample_rate,
+            size_bytes=dest_path.stat().st_size,
+            track_number=int(metadata.get("track_number", 0)),
+            total_tracks=int(metadata.get("total_tracks", 0)),
+            disc_number=int(metadata.get("disc_number", 1)),
+            total_discs=int(metadata.get("total_discs", 1)),
+            year=int(metadata.get("year", 0)),
+            file_type=file_type,
+            media_type=MediaType.AUDIO,
+            date_added=datetime.now(),
+            sample_count=sample_count,
+            dbid=dbid,
+            has_artwork=has_artwork,
+            artwork_count=artwork_count,
+            artwork_size=artwork_size,
+        )
+
+        # Add to database
+        db.tracks.append(track)
+
+        # Add to master playlist
+        master = db.get_master_playlist()
+        if master:
+            master.track_ids.append(track.id)
+
+        return track
+    finally:
+        if _temp_file_to_cleanup is not None:
+            with contextlib.suppress(OSError):
+                _temp_file_to_cleanup.unlink()
 
 
 def remove_track(device: IPodDevice, db: Database, track: Track) -> None:

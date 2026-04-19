@@ -22,6 +22,9 @@
               pkgs.uv
               pkgs.ruff
               pkgs.pyright
+              pkgs.ffmpeg-full
+              pkgs.flac
+              pkgs.fdk-aac-encoder
             ];
 
             env = lib.optionalAttrs pkgs.stdenv.isLinux {

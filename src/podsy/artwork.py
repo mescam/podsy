@@ -8,12 +8,16 @@ correlation IDs and dimensions.
 """
 
 import io
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from mutagen.flac import FLAC
 from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
 from PIL import Image  # type: ignore[import-untyped]
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -51,6 +55,8 @@ def extract_artwork(audio_path: Path) -> bytes | None:
             return _extract_mp3_artwork(audio_path)
         elif suffix in (".m4a", ".m4p", ".mp4", ".aac"):
             return _extract_m4a_artwork(audio_path)
+        elif suffix == ".flac":
+            return _extract_flac_artwork(audio_path)
     except Exception:
         # If extraction fails, just return None
         pass
@@ -88,6 +94,113 @@ def _extract_m4a_artwork(audio_path: Path) -> bytes | None:
             # Return the first cover
             return bytes(covers[0])
 
+    return None
+
+
+def _extract_flac_artwork(audio_path: Path) -> bytes | None:
+    """Extract artwork from FLAC file (embedded pictures).
+
+    Args:
+        audio_path: Path to the FLAC file
+
+    Returns:
+        Raw image data as bytes, or None if no artwork found
+    """
+    try:
+        flac = FLAC(audio_path)
+    except Exception as e:
+        logger.debug(f"Failed to read FLAC file {audio_path}: {e}")
+        return None
+
+    if not flac.pictures:
+        logger.debug(f"No embedded pictures found in {audio_path}")
+        return None
+
+    # Picture types: 0=other, 1=icon, 2=other icon, 3=cover front, 4=cover back, etc.
+    # Prefer cover front (type 3), otherwise use first available picture
+    cover_front = None
+    first_picture = None
+
+    for picture in flac.pictures:
+        if first_picture is None:
+            first_picture = picture
+        if picture.type == 3:
+            cover_front = picture
+            break
+
+    selected_picture = cover_front if cover_front else first_picture
+    if selected_picture:
+        logger.debug(
+            f"Found artwork in {audio_path} (type={selected_picture.type}, "
+            f"mime={selected_picture.mime})"
+        )
+        return selected_picture.data
+
+    return None
+
+
+def find_folder_artwork(directory: Path) -> Path | None:
+    """Find cover art file in the same directory as the audio file.
+
+    Args:
+        directory: Directory to search for cover art
+
+    Returns:
+        Path to the cover art file, or None if not found
+    """
+    cover_names = [
+        "cover.jpg",
+        "Cover.jpg",
+        "folder.jpg",
+        "Folder.jpg",
+        "front.jpg",
+        "Front.jpg",
+        "cover.png",
+        "Cover.png",
+        "folder.png",
+        "artwork.jpg",
+        "Artwork.jpg",
+    ]
+
+    for name in cover_names:
+        cover_path = directory / name
+        if cover_path.is_file():
+            logger.debug(f"Found folder artwork: {cover_path}")
+            return cover_path
+
+    logger.debug(f"No folder artwork found in {directory}")
+    return None
+
+
+def resolve_artwork(audio_path: Path) -> bytes | None:
+    """Resolve artwork for an audio file using a fallback chain.
+
+    Tries to find artwork in this order:
+    1. Embedded artwork in the audio file
+    2. Cover art file in the same directory
+    3. None (caller may then try MusicBrainz or other sources)
+
+    Args:
+        audio_path: Path to the audio file
+
+    Returns:
+        Raw image data as bytes, or None if no artwork found
+    """
+    embedded_art = extract_artwork(audio_path)
+    if embedded_art:
+        logger.debug(f"Found embedded artwork for {audio_path}")
+        return embedded_art
+
+    folder_art_path = find_folder_artwork(audio_path.parent)
+    if folder_art_path:
+        try:
+            folder_art = folder_art_path.read_bytes()
+            logger.debug(f"Found folder artwork at {folder_art_path}")
+            return folder_art
+        except Exception as e:
+            logger.debug(f"Failed to read folder artwork {folder_art_path}: {e}")
+
+    logger.debug(f"No artwork found for {audio_path}")
     return None
 
 

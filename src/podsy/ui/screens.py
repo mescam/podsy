@@ -175,6 +175,8 @@ class MainScreen(Screen[None]):
         self._sync_worker: Worker[list] | None = None
         # Artwork database for album art
         self._artwork_db = ArtworkDB()
+        # FLAC conversion preference
+        self._convert_flac: bool = True
 
     def compose(self) -> ComposeResult:
         """Compose the main screen layout."""
@@ -441,18 +443,36 @@ class MainScreen(Screen[None]):
 
         if path.is_file():
             # Sync single file (fast, no progress bar needed)
-            try:
-                track = sync_file(
-                    self.device, self.database, path, artwork_db=self._artwork_db
-                )
-                save(self.database, self.device.db_path)
-                save_artworkdb(self._artwork_db, self.device.artwork_dir)
-                self._load_library_tree()
-                self.notify(f"Synced: {track.title}", severity="information")
-            except SyncError as e:
-                self.notify(f"Sync failed: {e}", severity="error")
-            except Exception as e:
-                self.notify(f"Error: {e}", severity="error")
+            if path.suffix.lower() == ".flac":
+                try:
+                    from ..transcoder import TranscodingError
+
+                    track = sync_file(
+                        self.device, self.database, path, artwork_db=self._artwork_db
+                    )
+                    save(self.database, self.device.db_path)
+                    save_artworkdb(self._artwork_db, self.device.artwork_dir)
+                    self._load_library_tree()
+                    self.notify(f"Converted & synced: {track.title}", severity="information")
+                except TranscodingError as e:
+                    self.notify(f"Conversion failed: {e}", severity="error")
+                except SyncError as e:
+                    self.notify(f"Sync failed: {e}", severity="error")
+                except Exception as e:
+                    self.notify(f"Error: {e}", severity="error")
+            else:
+                try:
+                    track = sync_file(
+                        self.device, self.database, path, artwork_db=self._artwork_db
+                    )
+                    save(self.database, self.device.db_path)
+                    save_artworkdb(self._artwork_db, self.device.artwork_dir)
+                    self._load_library_tree()
+                    self.notify(f"Synced: {track.title}", severity="information")
+                except SyncError as e:
+                    self.notify(f"Sync failed: {e}", severity="error")
+                except Exception as e:
+                    self.notify(f"Error: {e}", severity="error")
 
         elif path.is_dir():
             # Sync entire folder with progress bar
@@ -460,6 +480,28 @@ class MainScreen(Screen[None]):
 
     def _start_folder_sync(self, folder: Path) -> None:
         """Start syncing a folder with progress tracking."""
+        from ..transcoder import is_flac
+
+        # Check for FLAC files and show confirmation dialog if needed
+        files = list(folder.rglob("*"))
+        flac_count = sum(1 for f in files if f.is_file() and is_flac(f))
+
+        if flac_count > 0:
+            self.app.push_screen(
+                ConfirmFlacConversionScreen(flac_count),
+                lambda convert: self._start_folder_sync_with_flag(folder, convert),
+            )
+        else:
+            self._start_folder_sync_with_flag(folder, True)
+
+    def _start_folder_sync_with_flag(self, folder: Path, convert_flac: bool) -> None:
+        """Start syncing a folder with FLAC conversion preference.
+
+        Args:
+            folder: The folder path to sync.
+            convert_flac: Whether to convert FLAC files to AAC.
+        """
+        self._convert_flac = convert_flac
         # Show progress bar
         progress_container = self.query_one("#progress-container")
         progress_container.display = True
@@ -472,15 +514,24 @@ class MainScreen(Screen[None]):
 
         # Start worker thread
         self._sync_worker = self.run_worker(
-            lambda: self._sync_folder_worker(folder),
+            lambda: self._sync_folder_worker(folder, convert_flac),
             name="folder_sync",
             exclusive=True,
             thread=True,
         )
 
-    def _sync_folder_worker(self, folder: Path) -> list:
-        """Worker to sync folder in background thread."""
+    def _sync_folder_worker(self, folder: Path, convert_flac: bool) -> list:
+        """Worker to sync folder in background thread.
+
+        Args:
+            folder: The folder path to sync.
+            convert_flac: Whether to convert FLAC files to AAC.
+
+        Returns:
+            List of synced tracks.
+        """
         from ..sync import SUPPORTED_EXTENSIONS
+        from ..transcoder import is_flac
 
         # First, count files to set up progress bar
         files = list(folder.rglob("*"))
@@ -505,6 +556,10 @@ class MainScreen(Screen[None]):
         errors: list[tuple[Path, str]] = []
 
         for i, file in enumerate(sorted(music_files), 1):
+            # Skip FLAC files if user chose not to convert
+            if not convert_flac and is_flac(file):
+                continue
+
             # Update progress
             self.app.call_from_thread(self._update_progress, i, total, file.name)
 
@@ -1026,4 +1081,58 @@ class ConfirmDeleteLibraryScreen(Screen[bool]):
 
     def action_confirm(self) -> None:
         """Confirm deletion."""
+        self.dismiss(True)
+
+
+class ConfirmFlacConversionScreen(Screen[bool]):
+    """Modal screen to confirm FLAC to AAC conversion."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=True),
+        Binding("enter", "confirm", "Convert", show=True),
+    ]
+
+    def __init__(self, flac_count: int) -> None:
+        """Initialize with FLAC file count."""
+        super().__init__()
+        self.flac_count = flac_count
+
+    def compose(self) -> ComposeResult:
+        """Compose the confirmation dialog."""
+        yield Container(
+            Label("FLAC Files Detected", id="dialog-title"),
+            Static(
+                f"Found {self.flac_count} FLAC file(s).\n\n"
+                "These will be converted to AAC 256kbps for iPod compatibility.\n"
+                "This may take a while depending on file count.",
+                id="confirm-message",
+            ),
+            Horizontal(
+                Button("Skip FLAC", id="cancel-btn", variant="default"),
+                Button("Convert & Sync", id="convert-btn", variant="primary"),
+                id="dialog-buttons",
+            ),
+            id="dialog-container",
+        )
+
+    def on_mount(self) -> None:
+        """Focus convert button by default."""
+        self.query_one("#convert-btn", Button).focus()
+
+    @on(Button.Pressed, "#cancel-btn")
+    def on_cancel_pressed(self) -> None:
+        """Handle cancel button press."""
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#convert-btn")
+    def on_convert_pressed(self) -> None:
+        """Handle convert button press."""
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        """Cancel conversion."""
+        self.dismiss(False)
+
+    def action_confirm(self) -> None:
+        """Confirm conversion."""
         self.dismiss(True)
