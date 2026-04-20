@@ -15,6 +15,8 @@ A sleek **TUI (Terminal User Interface)** for managing your iPod Classic 5.5g on
 
 - **iTunesDB Compatibility** — Full read/write support for iTunesDB versions 0x13-0x15, ensuring your iPod works seamlessly
 - **Music Sync** — Drag & drop folders to sync your music library with smart file handling
+- **FLAC Transcoding** — Automatically converts FLAC files to AAC during sync
+- **MusicBrainz Retagging** — Fix incorrect track and album metadata via MusicBrainz lookup
 - **Playlist Management** — Create, edit, delete, and reorder playlists with ease
 - **Album Artwork** — Browse your music by artist/album with beautiful cover art support
 - **Keyboard-First** — Navigate everything with keyboard shortcuts — no mouse needed
