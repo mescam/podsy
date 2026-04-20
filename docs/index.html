@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Podsy — iPod Classic TUI for Linux</title>
+  <meta name="description" content="A sleek TUI for managing your iPod Classic 5.5g on Linux. Sync music, manage playlists, retag metadata — all from your terminal.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90' fill='%2300ff41'%3E♪%3C/text%3E%3C/svg%3E">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta property="og:title" content="Podsy — iPod Classic TUI for Linux">
+  <meta property="og:description" content="A sleek TUI for managing your iPod Classic 5.5g on Linux. Sync music, manage playlists, retag metadata — all from your terminal.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://mescam.github.io/podsy">
+</head>
+<body>
+  <h1 class="sr-only">Podsy</h1>
+
+  <section class="hero">
+    <pre class="logo" aria-hidden="true">
+    ██████╗  ██████╗ ██████╗ ███████╗██╗   ██╗
+    ██╔══██╗██╔═══██╗██╔══██╗██╔════╝╚██╗ ██╔╝
+    ██████╔╝██║   ██║██║  ██║███████╗ ╚████╔╝ 
+    ██╔═══╝ ██║   ██║██║  ██║╚════██║  ╚██╔╝  
+    ██║     ╚██████╔╝██████╔╝███████║   ██║   
+    ╚═╝      ╚═════╝ ╚═════╝ ╚══════╝   ╚═╝   
+    </pre>
+    <p class="tagline">A sleek TUI for managing your iPod Classic 5.5g on Linux</p>
+    <a href="https://github.com/mescam/podsy" class="cta">View on GitHub</a>
+  </section>
+
+  <main>
+    <section class="features">
+      <h2>Features</h2>
+      <div class="features-grid">
+        <div class="feature-card">
+          <span class="icon">💾</span>
+          <h3>iTunesDB Compatible</h3>
+          <p>Full read/write support for iTunesDB versions 0x13–0x15</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">📂</span>
+          <h3>Music Sync</h3>
+          <p>Drag & drop folders to sync your music library</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">🔄</span>
+          <h3>FLAC Transcoding</h3>
+          <p>Automatically converts FLAC to AAC during sync</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">🏷️</span>
+          <h3>MusicBrainz Retagging</h3>
+          <p>Fix incorrect metadata via MusicBrainz lookup</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">📋</span>
+          <h3>Playlist Management</h3>
+          <p>Create, edit, delete, and reorder playlists</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">🎨</span>
+          <h3>Album Artwork</h3>
+          <p>Album cover art synced to your iPod</p>
+        </div>
+        <div class="feature-card">
+          <span class="icon">⌨️</span>
+          <h3>Keyboard-First</h3>
+          <p>Full TUI — navigate everything with keyboard shortcuts</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="quickstart">
+      <h2>Quick Start</h2>
+      <div class="terminal">
+        <div class="terminal-header"></div>
+        <pre><code><span class="comment"># Clone and enter the project</span>
+git clone https://github.com/mescam/podsy.git
+cd podsy
+
+<span class="comment"># Enter development environment</span>
+nix develop
+
+<span class="comment"># Sync dependencies</span>
+uv sync
+
+<span class="comment"># Run Podsy</span>
+podsy<span class="cursor">▌</span></code></pre>
+      </div>
+    </section>
+
+    <section class="shortcuts">
+      <h2>Keyboard Shortcuts</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Key</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><kbd>↑</kbd> / <kbd>↓</kbd></td>
+            <td>Navigate</td>
+          </tr>
+          <tr>
+            <td><kbd>Enter</kbd></td>
+            <td>Select</td>
+          </tr>
+          <tr>
+            <td><kbd>Space</kbd></td>
+            <td>Toggle selection</td>
+          </tr>
+          <tr>
+            <td><kbd>a</kbd></td>
+            <td>Add music</td>
+          </tr>
+          <tr>
+            <td><kbd>A</kbd></td>
+            <td>Add folder</td>
+          </tr>
+          <tr>
+            <td><kbd>d</kbd></td>
+            <td>Delete selected</td>
+          </tr>
+          <tr>
+            <td><kbd>D</kbd></td>
+            <td>Delete all</td>
+          </tr>
+          <tr>
+            <td><kbd>p</kbd></td>
+            <td>Create playlist</td>
+          </tr>
+          <tr>
+            <td><kbd>e</kbd></td>
+            <td>Edit playlist</td>
+          </tr>
+          <tr>
+            <td><kbd>r</kbd></td>
+            <td>Refresh</td>
+          </tr>
+          <tr>
+            <td><kbd>q</kbd></td>
+            <td>Quit</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="requirements">
+      <h2>Requirements</h2>
+      <div class="badge-list">
+        <span class="badge">Python 3.13+</span>
+        <span class="badge">Linux</span>
+        <span class="badge">NixOS</span>
+        <span class="badge">iPod Classic 5.5g</span>
+      </div>
+      <p>Also supports iPod Classic 6th Gen, iPod Video, and other click wheel iPods with iTunesDB.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p>MIT License · <a href="https://github.com/mescam/podsy">GitHub</a></p>
+  </footer>
+</body>
+</html>
