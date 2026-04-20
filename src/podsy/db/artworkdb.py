@@ -60,9 +60,6 @@ def save_artworkdb(db: ArtworkDB, artwork_dir: Path) -> None:
         db: ArtworkDB to save
         artwork_dir: Path to iPod_Control/Artwork directory
     """
-    if not db.images:
-        return  # Nothing to save
-
     artwork_dir.mkdir(parents=True, exist_ok=True)
 
     # Build the database file

@@ -19,13 +19,30 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Final
+from typing import Final, TypedDict
+
+
+class AlbumTrackInfo(TypedDict):
+    title: str
+    artist: str
+    disc_number: int
+    track_number: int
+    total_tracks: int
+
+
+class AlbumMetadata(TypedDict, total=False):
+    album: str
+    album_artist: str
+    year: int
+    total_discs: int
+    tracks: list[AlbumTrackInfo]
 
 __all__ = [
     "MusicBrainzError",
     "search_release",
     "search_recording",
     "fetch_track_metadata",
+    "fetch_album_metadata",
     "lookup_release",
     "download_cover_art",
     "fetch_cover_art",
@@ -96,20 +113,28 @@ def _make_request(url: str, *, timeout: int = 10) -> bytes | None:
         return None
 
 
-def search_release(artist: str, album: str, *, timeout: int = 10) -> str | None:
+def search_release(
+    artist: str,
+    album: str,
+    *,
+    timeout: int = 10,
+    expected_track_count: int = 0,
+) -> str | None:
     """Search MusicBrainz for a release by artist and album name.
 
     Args:
         artist: The artist name to search for.
         album: The album/release name to search for.
         timeout: Request timeout in seconds. Defaults to 10.
+        expected_track_count: If > 0, prefer releases whose total track count
+            across all media is >= this value and closest to it.
 
     Returns:
-        The MusicBrainz ID (MBID) of the first matching release, or None if not found.
+        The MusicBrainz ID (MBID) of the best matching release, or None if not found.
     """
     query = f'artist:{artist} AND release:{album}'
     encoded_query = urllib.parse.quote_plus(query)
-    url = f"{MUSICBRAINZ_API_BASE}?query={encoded_query}&fmt=json&limit=5"
+    url = f"{MUSICBRAINZ_API_BASE}?query={encoded_query}&fmt=json&limit=10"
 
     logger.debug("Searching MusicBrainz for artist=%s, album=%s", artist, album)
     response_bytes = _make_request(url, timeout=timeout)
@@ -122,8 +147,35 @@ def search_release(artist: str, album: str, *, timeout: int = 10) -> str | None:
         if not releases:
             logger.debug("No releases found for artist=%s, album=%s", artist, album)
             return None
-        mbid = releases[0].get("id")
-        logger.debug("Found release MBID: %s", mbid)
+
+        album_lower = album.lower()
+        scored: list[tuple[int, dict]] = []
+        for rel in releases:
+            score = 0
+            if rel.get("title", "").lower() == album_lower:
+                score += 100
+            if rel.get("status") == "Official":
+                score += 20
+            rg = rel.get("release-group", {}) or {}
+            if rg.get("primary-type") == "Album":
+                score += 10
+            secondary = rg.get("secondary-types") or []
+            if "Compilation" in secondary:
+                score -= 30
+            if "Live" in secondary:
+                score -= 20
+            if expected_track_count > 0:
+                total = sum(m.get("track-count", 0) for m in rel.get("media", []))
+                if total == expected_track_count:
+                    score += 50
+                elif total >= expected_track_count:
+                    score += max(0, 25 - (total - expected_track_count))
+            score += int(rel.get("score", 0)) // 20
+            scored.append((score, rel))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        mbid = scored[0][1].get("id")
+        logger.debug("Found release MBID: %s (score=%d)", mbid, scored[0][0])
         return mbid
     except json.JSONDecodeError as e:
         logger.error("Failed to parse JSON response: %s", e)
@@ -384,9 +436,91 @@ def fetch_track_metadata(
     return result
 
 
+def fetch_album_metadata(
+    artist: str,
+    album: str,
+    *,
+    expected_track_count: int = 0,
+    timeout: int = 10,
+) -> AlbumMetadata | None:
+    logger.info("Fetching album metadata for %s - %s", artist, album)
+    mbid = search_release(
+        artist, album, timeout=timeout, expected_track_count=expected_track_count
+    )
+    if not mbid:
+        return None
+
+    release = _lookup_release(mbid, timeout=timeout)
+    if not release:
+        return None
+
+    media = release.get("media", []) or []
+    if not media:
+        return None
+
+    tracks: list[AlbumTrackInfo] = []
+    for medium in media:
+        disc_number = medium.get("position", 1)
+        total_tracks = medium.get("track-count", 0)
+        for tr in medium.get("tracks", []) or []:
+            recording = tr.get("recording", {}) or {}
+            track_title = tr.get("title") or recording.get("title") or ""
+            track_artist = ""
+            credits = tr.get("artist-credit") or recording.get("artist-credit") or []
+            if credits:
+                track_artist = (
+                    credits[0].get("name")
+                    or credits[0].get("artist", {}).get("name")
+                    or ""
+                )
+            pos = tr.get("position")
+            if not pos:
+                with contextlib.suppress(ValueError, TypeError):
+                    pos = int(tr.get("number") or 0)
+            if not pos:
+                continue
+            tracks.append(AlbumTrackInfo(
+                title=track_title,
+                artist=track_artist,
+                disc_number=disc_number,
+                track_number=pos,
+                total_tracks=total_tracks,
+            ))
+
+    if not tracks:
+        return None
+
+    album_artist = ""
+    credits = release.get("artist-credit") or []
+    if credits:
+        album_artist = (
+            credits[0].get("name")
+            or credits[0].get("artist", {}).get("name")
+            or ""
+        )
+
+    result: AlbumMetadata = {
+        "album": release.get("title") or album,
+        "album_artist": album_artist or artist,
+        "total_discs": len(media),
+        "tracks": tracks,
+    }
+
+    release_date = release.get("date") or ""
+    if release_date:
+        with contextlib.suppress(ValueError):
+            result["year"] = int(release_date[:4])
+
+    logger.info(
+        "Album metadata: %s - %s, %d discs, %d tracks",
+        result["album_artist"], result["album"], result["total_discs"], len(tracks),
+    )
+    return result
+
+
 def _lookup_release(mbid: str, *, timeout: int = 10) -> dict | None:
     """Look up a release by MBID to get full details including date and tracklist."""
-    url = f"{MUSICBRAINZ_API_BASE}{mbid}?inc=media&fmt=json"
+    url = f"{MUSICBRAINZ_API_BASE}{mbid}?inc=recordings+artist-credits+release-groups&fmt=json"
     response_bytes = _make_request(url, timeout=timeout)
     if response_bytes is None:
         return None

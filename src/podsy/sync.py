@@ -27,7 +27,7 @@ from .artwork import generate_artwork_formats, get_artwork_size, resolve_artwork
 from .db.artworkdb import ArtworkDB, add_artwork_to_db
 from .db.models import Database, FileType, MediaType, Track
 from .device import IPodDevice, ensure_music_folders
-from .musicbrainz import fetch_cover_art as fetch_mb_cover_art
+from .musicbrainz import fetch_album_metadata, fetch_cover_art as fetch_mb_cover_art
 from .musicbrainz import fetch_track_metadata
 from .transcoder import TranscodingError, is_flac, transcode_flac_to_aac
 
@@ -609,15 +609,40 @@ def retag_track(track: Track) -> bool:
     if "genre" in result and result["genre"]:
         track.genre = str(result["genre"])
         updated = True
-    if "track_number" in result and result["track_number"]:
-        track.track_number = int(result["track_number"])
-        updated = True
-    if "total_tracks" in result and result["total_tracks"]:
-        track.total_tracks = int(result["total_tracks"])
-        updated = True
-    if "disc_number" in result and result["disc_number"]:
-        track.disc_number = int(result["disc_number"])
-        updated = True
+
+    new_total_tracks = int(result.get("total_tracks") or 0)
+    new_track_number = int(result.get("track_number") or 0)
+    new_disc_number = int(result.get("disc_number") or 0)
+    new_total_discs = int(result.get("total_discs") or 0)
+
+    numbers_look_valid = (
+        new_track_number > 0
+        and (new_total_tracks == 0 or new_track_number <= new_total_tracks)
+        and (new_total_discs == 0 or new_disc_number <= new_total_discs)
+    )
+    if numbers_look_valid:
+        if new_track_number:
+            track.track_number = new_track_number
+            updated = True
+        if new_total_tracks:
+            track.total_tracks = new_total_tracks
+            updated = True
+        if new_disc_number:
+            track.disc_number = new_disc_number
+            updated = True
+        if new_total_discs:
+            track.total_discs = new_total_discs
+            updated = True
+        if track.disc_number > track.total_discs:
+            track.total_discs = track.disc_number
+    else:
+        logger.warning(
+            "Rejected suspicious track numbers from MB for track %d: "
+            "track=%d/%d disc=%d/%d (keeping original)",
+            track.id, new_track_number, new_total_tracks,
+            new_disc_number, new_total_discs,
+        )
+
     if "year" in result and result["year"]:
         track.year = int(result["year"])
         updated = True
@@ -625,6 +650,79 @@ def retag_track(track: Track) -> bool:
     if updated:
         logger.info("Retagged track %d: %s - %s", track.id, track.artist, track.title)
     return updated
+
+
+def retag_album(tracks: list[Track]) -> int:
+    if not tracks:
+        return 0
+
+    album = tracks[0].album or ""
+    album_artist = tracks[0].album_artist or tracks[0].artist or ""
+    if not album or not album_artist:
+        logger.info("Falling back to per-track retag: missing album/artist")
+        return sum(1 for t in tracks if retag_track(t))
+
+    metadata = fetch_album_metadata(
+        album_artist, album, expected_track_count=len(tracks)
+    )
+    if metadata is None or not metadata.get("tracks"):
+        logger.info("No album match on MusicBrainz for %s - %s; per-track fallback",
+                    album_artist, album)
+        return sum(1 for t in tracks if retag_track(t))
+
+    mb_tracks = metadata["tracks"]
+    mb_by_title: dict[str, dict] = {}
+    for mb in mb_tracks:
+        key = _norm_title(mb.get("title", ""))
+        if key:
+            mb_by_title.setdefault(key, mb)
+
+    updated_count = 0
+    unmatched: list[Track] = []
+
+    for track in tracks:
+        current_title = _norm_title(track.title or "")
+        clean_title = _norm_title(
+            re.sub(r"^\d{1,3}\s*[.\-\s]\s*", "", track.title or "")
+        )
+        mb_match = mb_by_title.get(current_title) or mb_by_title.get(clean_title)
+        if mb_match is None:
+            for mb in mb_tracks:
+                mb_key = _norm_title(mb.get("title", ""))
+                if mb_key and (mb_key in current_title or current_title in mb_key):
+                    mb_match = mb
+                    break
+        if mb_match is None:
+            unmatched.append(track)
+            continue
+
+        if metadata.get("album"):
+            track.album = str(metadata["album"])
+        if metadata.get("album_artist"):
+            track.album_artist = str(metadata["album_artist"])
+        if metadata.get("year"):
+            track.year = int(metadata["year"])
+        if mb_match.get("title"):
+            track.title = str(mb_match["title"])
+        if mb_match.get("artist"):
+            track.artist = str(mb_match["artist"])
+        track.track_number = int(mb_match["track_number"])
+        track.total_tracks = int(mb_match.get("total_tracks") or 0)
+        track.disc_number = int(mb_match.get("disc_number") or 1)
+        track.total_discs = int(metadata.get("total_discs") or 1)
+        updated_count += 1
+        logger.info("Retagged track %d (album-match): %s - %s",
+                    track.id, track.artist, track.title)
+
+    if unmatched:
+        logger.warning("Album retag: %d tracks unmatched in release for %s - %s",
+                       len(unmatched), album_artist, album)
+
+    return updated_count
+
+
+def _norm_title(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", s.lower())
 
 
 class SyncProgressCallback(Protocol):

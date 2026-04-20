@@ -34,7 +34,7 @@ from ..playlists import (
     add_track_to_playlist,
     create_playlist,
 )
-from ..sync import SyncError, remove_track, retag_track, sync_file
+from ..sync import SyncError, remove_track, retag_album, retag_track, sync_file
 
 if TYPE_CHECKING:
     pass
@@ -853,21 +853,41 @@ class MainScreen(Screen[None]):
         results: list[tuple[int, bool]] = []
         total = len(track_ids)
 
-        for i, track_id in enumerate(track_ids, 1):
+        tracks_by_album: dict[tuple[str, str], list] = {}
+        ordered_tracks: list = []
+        for track_id in track_ids:
             track = self.database.get_track_by_id(track_id)
             if track is None:
                 results.append((track_id, False))
                 continue
+            ordered_tracks.append(track)
+            key = (track.album or "", track.album_artist or track.artist or "")
+            tracks_by_album.setdefault(key, []).append(track)
 
+        processed = 0
+        for (album, album_artist), group in tracks_by_album.items():
+            label = f"{album_artist} - {album}" if album else "Unknown"
             self.app.call_from_thread(
-                self._update_progress, i, total, f"{track.artist} - {track.title}"
+                self._update_progress, processed + 1, total, label
             )
-
-            try:
-                updated = retag_track(track)
-                results.append((track_id, updated))
-            except Exception:
-                results.append((track_id, False))
+            updated_ids: set[int] = set()
+            if len(group) >= 2 and album and album_artist:
+                try:
+                    updated_count = retag_album(group)
+                    if updated_count > 0:
+                        updated_ids = {t.id for t in group}
+                except Exception:
+                    updated_ids = set()
+            else:
+                for t in group:
+                    try:
+                        if retag_track(t):
+                            updated_ids.add(t.id)
+                    except Exception:
+                        pass
+            for t in group:
+                results.append((t.id, t.id in updated_ids))
+                processed += 1
 
         self.app.call_from_thread(self._on_retag_complete, results)
         return results
