@@ -268,15 +268,15 @@ class MainScreen(Screen[None]):
 
         tracks = self._get_filtered_tracks()
 
-        # Sort tracks
+        # Sort a copy — never mutate db.tracks (iPod requires stable insertion order)
         if self._sort_by == "artist":
-            tracks.sort(key=lambda t: (t.artist or "", t.album or "", t.title or ""))
+            tracks = sorted(tracks, key=lambda t: (t.artist or "", t.album or "", t.title or ""))
         elif self._sort_by == "album":
-            tracks.sort(key=lambda t: (t.album or "", t.artist or "", t.title or ""))
+            tracks = sorted(tracks, key=lambda t: (t.album or "", t.artist or "", t.title or ""))
         elif self._sort_by == "title":
-            tracks.sort(key=lambda t: (t.title or "", t.artist or "", t.album or ""))
+            tracks = sorted(tracks, key=lambda t: (t.title or "", t.artist or "", t.album or ""))
         elif self._sort_by == "date_added":
-            tracks.sort(key=lambda t: t.date_added, reverse=True)
+            tracks = sorted(tracks, key=lambda t: t.date_added, reverse=True)
 
         # Build tree structure - store track IDs in node.data
         if self._sort_by in ("artist", "title", "date_added"):
